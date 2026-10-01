@@ -9,7 +9,7 @@ trigger that saves snapshots, and a waterfall "DVR": drag a box over the
 waterfall to save that band and time span as filtered, decimated IQ.
 Recordings are SigMF in captures/.
 
-    python viewer.py [--lo 2440] [--gain 45] [--rate 80]
+    python espdrmini.py [--lo 2440] [--gain 45] [--rate 80]
 """
 import argparse
 import collections

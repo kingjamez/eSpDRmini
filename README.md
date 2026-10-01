@@ -101,7 +101,7 @@ board doesn't appear.
     git clone https://github.com/kingjamez/eSpDRmini && cd eSpDRmini
     python3 -m venv .venv
     .venv/bin/pip install -r requirements.txt      # Windows: .venv\Scripts\pip
-    .venv/bin/python viewer.py                     # Windows: .venv\Scripts\python
+    .venv/bin/python espdrmini.py                  # Windows: .venv\Scripts\python
 
 The viewer finds the board, loads the firmware into its RAM (about a second)
 and starts showing the band around 2440 MHz.
@@ -180,10 +180,10 @@ triggered it.
     │          CRC32 ──▶ USB Serial/JTAG (12 Mbit/s)                                     │
     └────────────────────────────────────────────────────────────────────────────────────┘
                                          │  USB
-    ┌──────────────────────────────── host (Python) ────────────────────────────────────┐
-    │  espctl.py  control protocol, RAM loader, unpacking + CRC check                   │
-    │  viewer.py  receiver thread ─▶ spectra ─▶ display · trigger · DVR ring (400 rows)  │
-    │  dsp.py     FFTs, box extraction (mix · FIR · decimate), SigMF writer              │
+    ┌────────────────────────────────── host (Python) ───────────────────────────────────┐
+    │  espctl.py    control protocol, RAM loader, unpacking + CRC check                  │
+    │  espdrmini.py receiver thread ─▶ spectra ─▶ display · trigger · DVR ring           │
+    │  dsp.py       FFTs, box extraction (mix · FIR · decimate), SigMF writer            │
     └────────────────────────────────────────────────────────────────────────────────────┘
 
 ### 1. The radio (all eSpDR)
@@ -248,7 +248,7 @@ adds 38 KB and about 50 ms, which sets the rate at 20 snapshots per second for
   and 16-byte responses, each with a CRC32), loads the firmware, and unpacks
   and verifies snapshots. It's also a small command-line tool:
   `python espctl.py status` or `python espctl.py snap -n 10 --save x.cs16`.
-* **`viewer.py`** runs a receiver thread that applies setting changes (a
+* **`espdrmini.py`** (the viewer) runs a receiver thread that applies setting changes (a
   dragged slider sends many; only the last is applied, and a retune takes
   about 19 ms) and requests snapshots. The GUI thread turns each snapshot into
   spectra, updates the display, checks the trigger and stores the snapshot in
@@ -304,7 +304,7 @@ outside the span can alias into it; see eSpDR's
 
 | Path | What |
 |---|---|
-| `viewer.py` | the GUI |
+| `espdrmini.py` | the viewer (GUI) |
 | `dsp.py` | spectra, DVR box extraction, SigMF writing |
 | `espctl.py` | control protocol, firmware loader, command-line tool |
 | `firmware/espdr-snapshot.bin` | the firmware image the viewer loads |
