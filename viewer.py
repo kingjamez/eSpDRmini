@@ -151,7 +151,7 @@ def main():
     from matplotlib.patches import Circle, Polygon, Rectangle
     from matplotlib.transforms import blended_transform_factory
     from matplotlib.widgets import (Button, CheckButtons, RectangleSelector, Slider, SpanSelector,
-                                    TextBox)
+                                    TextBox, Widget)
 
     plt.rcParams.update({
         "font.family": DISPLAY, "text.color": TEXT, "axes.labelcolor": MUTED,
@@ -205,6 +205,18 @@ def main():
     PAGES = ("Receiver", "Display", "Trigger", "Measure & DVR")
     page_artists = {p: [] for p in PAGES}
     building = [None]
+    # Matplotlib holds widget callbacks weakly: an unreferenced widget is
+    # garbage-collected and silently stops responding, so every widget is kept
+    # here. Widgets on hidden pages still see clicks at their position, so each
+    # page's widgets are switched off while it is hidden (show_page).
+    widgets = []
+    page_widgets = {p: [] for p in PAGES}
+
+    def keep(w):
+        widgets.append(w)
+        if building[0]:
+            page_widgets[building[0]].append(w)
+        return w
 
     def track(artist):
         if building[0]:
@@ -230,15 +242,15 @@ def main():
             s.set_color(color)
 
     def button(rect, text, fill=PANEL, hover=RAISED, fg=TEXT, size=9):
-        b = Button(axes(rect), text, color=fill, hovercolor=hover)
+        b = keep(Button(axes(rect), text, color=fill, hovercolor=hover))
         b.label.set_color(fg)
         b.label.set_fontsize(size)
         spines(b.ax)
         return b
 
     def slider(rect, lo, hi, init, step, color, fmt):
-        s = Slider(axes(rect), "", lo, hi, valinit=init, valstep=step, color=color, track_color=RAISED,
-                   handle_style={"facecolor": TEXT, "edgecolor": color, "size": 8}, valfmt=fmt)
+        s = keep(Slider(axes(rect), "", lo, hi, valinit=init, valstep=step, color=color, track_color=RAISED,
+                        handle_style={"facecolor": TEXT, "edgecolor": color, "size": 8}, valfmt=fmt))
         s.valtext.set_color(TEXT)
         s.valtext.set_family(MONO)
         s.valtext.set_fontsize(8)
@@ -246,10 +258,17 @@ def main():
 
     def checkbox(rect, text, active):
         ax = axes(rect, facecolor=PANEL)
-        cb = CheckButtons(ax, [text], [active], label_props={"color": [TEXT], "fontsize": [8.5]},
-                          frame_props={"edgecolor": [MUTED], "facecolor": [INK], "s": [60]},
-                          check_props={"facecolor": [CYAN], "s": [60]})
+        cb = keep(CheckButtons(ax, [text], [active], label_props={"color": [TEXT], "fontsize": [8.5]},
+                               frame_props={"edgecolor": [MUTED], "facecolor": [INK], "s": [60]},
+                               check_props={"facecolor": [CYAN], "s": [60]}))
         spines(ax)
+
+        def row_click(ev):  # CheckButtons only reacts on its box or text; make the whole row a toggle
+            if (ev.inaxes is ax and ev.button == 1 and cb.get_active() and cb.eventson
+                    and not cb._frames.contains(ev)[0] and not cb.labels[0].contains(ev)[0]):
+                cb.set_active(0)
+
+        fig.canvas.mpl_connect("button_press_event", row_click)
         return cb
 
     class Segmented:
@@ -263,6 +282,7 @@ def main():
             for i, b in enumerate(self.buttons):
                 b.on_clicked(lambda _e, i=i: self.select(i))
             self.on_change, self.index = on_change, None
+            widgets.append(self)  # its buttons are kept (and paged) by button()
             self.select(active, notify=False)
 
         def select(self, i, notify=True):
@@ -307,8 +327,8 @@ def main():
     # ---- page: Receiver -------------------------------------------------------------
     building[0] = "Receiver"
     label(sx, 0.685, "LO frequency (MHz)  ·  Enter to tune", 8)
-    lo_box = TextBox(axes([sx, 0.642, sw, 0.036]), "", initial=f"{lo0:.3f}",
-                     color=PANEL, hovercolor=RAISED, textalignment="center")
+    lo_box = keep(TextBox(axes([sx, 0.642, sw, 0.036]), "", initial=f"{lo0:.3f}",
+                          color=PANEL, hovercolor=RAISED, textalignment="center"))
     lo_box.text_disp.set_color(TEXT)
     lo_box.text_disp.set_fontsize(14)
     lo_box.text_disp.set_family(MONO)
@@ -535,6 +555,8 @@ def main():
             on = k == i
             for a in page_artists[name]:
                 a.set_visible(on)
+            for w in page_widgets[name]:
+                Widget.set_active(w, on)  # base method: CheckButtons.set_active means "tick box N"
             b.color = RAISED if on else INK2
             b.ax.set_facecolor(b.color)
             b.label.set_color(TEXT if on else MUTED)
