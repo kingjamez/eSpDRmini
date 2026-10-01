@@ -44,7 +44,7 @@ gap-free 80 Msps streaming. Its
 [radio write-up](https://github.com/h0m3us3r/eSpDR/blob/main/docs/RADIO.md) is
 a great read on its own.
 
-eSpDRmini changes about 115 lines of eSpDR's firmware (see
+eSpDRmini adds about 225 lines to eSpDR's firmware (see
 [firmware/espdr-snapshot.patch](firmware/espdr-snapshot.patch)). Everything
 clever in it is eSpDR's.
 
@@ -53,9 +53,10 @@ clever in it is eSpDR's.
 ## What eSpDRmini is, and isn't
 
 eSpDR proper streams every sample, continuously, through an FPGA. eSpDRmini
-leaves the FPGA out. The ESP32-S3 captures one block of **15,360 contiguous
-IQ samples** (192 µs at 80 Msps), sends it over its own USB port, and repeats,
-about **20 times a second**. That's a series of short, high-bandwidth looks at
+leaves the FPGA out. The ESP32-S3 captures one block of **15,360 to 61,440
+contiguous IQ samples** (192–768 µs at 80 Msps, 0.96–3.84 ms at 16 Msps),
+sends it over its own USB port, and repeats, **5 to 20 times a second**
+depending on the block length. That's a series of short, high-bandwidth looks at
 the band rather than a continuous stream, which is plenty for:
 
 * watching Wi-Fi, Bluetooth, microwave ovens and other 2.4 GHz activity live;
@@ -130,7 +131,11 @@ waterfall. The gain selector is eSpDR's gain-table index: about 1 dB per step
 from 35 to 76. Gain 40–55 suits a typical indoor 2.4 GHz environment; above
 about 70 the ADC clips, and the level meter and "Clipped" figure turn red.
 The sample rate is 80 Msps (80 MHz span) or 16 Msps (16 MHz span, finer
-detail, a 0.96 ms snapshot).
+detail). **Snapshot length** chooses 1 to 4 capture banks per snapshot:
+15,360 to 61,440 contiguous samples, which is 192–768 µs at 80 Msps or
+0.96–3.84 ms at 16 Msps. Longer blocks catch more of each burst and give
+smoother spectra, at 20, 10, 7 or 5 snapshots per second. The length applies
+to everything: the live view, IQ snapshots, triggers and the DVR.
 
 **Display.** Show or hide the level meter (the layout closes up when it's
 hidden); a channel overlay for Wi-Fi (channels 1–14, with 1/6/11 highlighted)
@@ -170,8 +175,8 @@ triggered it.
 
     ┌──────────────── ESP32-S3 (eSpDR firmware + snapshot patch, in RAM) ───────────────┐
     │  antenna → LNA → mixer (RF PLL, LO 2.2–2.8 GHz) → baseband filters → 10-bit ADCs   │
-    │       → sample-dump engine ──80 Msps──▶ SRAM capture bank 0 (16,384 × 32-bit)      │
-    │  core 0: on ESP_SNAPSHOT, capture 15,360 pairs, check them, pack 20 bits/pair,     │
+    │       → sample-dump engine ──80 Msps──▶ SRAM capture banks 0–3 (4 × 16,384 words)  │
+    │  core 0: on ESP_SNAPSHOT, chain 1–4 banks, check the joins, pack 20 bits/pair,     │
     │          CRC32 ──▶ USB Serial/JTAG (12 Mbit/s)                                     │
     └────────────────────────────────────────────────────────────────────────────────────┘
                                          │  USB
@@ -201,25 +206,41 @@ file is flipped (conjugated) back to the usual orientation.
 
 eSpDR normally keeps the dump engine running and has both CPU cores bit-bang
 completed banks out to the FPGA. The patch adds one command to eSpDR's control
-protocol, `ESP_SNAPSHOT` (op 40). On request, core 0:
+protocol, `ESP_SNAPSHOT` (op 40), whose argument is a number of capture banks
+from 1 to 4. On request, core 0:
 
-1. fills capture bank 0 with a sentinel value that a 20-bit sample can never
-   equal;
-2. starts the dump engine at ring index 0 and polls its write index until
-   about 15,900 pairs have landed, well before the ring would wrap;
-3. stops the engine, waits for samples still in its pipeline, and checks that
-   no sentinel is left in the 15,360 pairs it will send (pairs 256–15,615),
-   so the block is known to be complete and contiguous;
-4. replies, then streams the block packed two pairs per five bytes (38,400
-   bytes instead of 61,440), followed by a CRC32.
+1. fills each bank it will use with a sentinel value that a 20-bit sample can
+   never equal;
+2. starts the dump engine in bank 0 at ring index 0 and polls its write
+   index. After about 15,700 new pairs it switches the writer to the next
+   bank, where the ring index simply carries on, so no samples are lost. This
+   is the same bank-chaining eSpDR uses for streaming, without the
+   transmission in between;
+3. stops the engine after the last bank and waits for samples still in its
+   pipeline. It then locates each bank's data exactly from the sentinels
+   around it and checks that every bank begins precisely where the previous
+   one ended. If any join is off by even one sample, it reports failure
+   instead of sending a damaged block;
+4. replies, then streams 15,360 pairs per bank (skipping the first 256),
+   packed two pairs per five bytes (38,400 bytes per bank instead of 61,440),
+   followed by a CRC32.
+
+Bank 3 overlaps the ROM's working memory. Like eSpDR's streaming code, a
+4-bank snapshot saves that memory first and restores it after sending.
+
+Joins were checked on real signals as well: a steady carrier was fitted on
+either side of every join in many 4-bank captures. The phase change across a
+join matched points inside a bank (median about 0.1 rad), whereas a single
+lost or repeated sample would show as 0.63 rad. Over 400 four-bank captures
+at both sample rates, none failed.
 
 Core 1 stays idle and the GPIO link is never driven. The build also turns off
 eSpDR's 20 MHz clock output for the FPGA (`-DNO_FORWARDED_CLOCK`), which
 isn't needed here. The image is loaded with `esptool --no-stub load-ram`, the
 same way eSpDR's own host tool loads it, and talks over the chip's built-in
-USB Serial/JTAG port. That port runs at USB full speed (12 Mbit/s); a 38 KB
-snapshot plus its round trip takes about 49 ms, which sets the rate of about
-20 snapshots per second.
+USB Serial/JTAG port. That port runs at USB full speed (12 Mbit/s): each bank
+adds 38 KB and about 50 ms, which sets the rate at 20 snapshots per second for
+1 bank down to 5 for 4.
 
 ### 3. The host
 
@@ -231,7 +252,7 @@ snapshot plus its round trip takes about 49 ms, which sets the rate of about
   dragged slider sends many; only the last is applied, and a retune takes
   about 19 ms) and requests snapshots. The GUI thread turns each snapshot into
   spectra, updates the display, checks the trigger and stores the snapshot in
-  the DVR ring buffer (400 × 15,360 int16 IQ pairs, about 24 MB).
+  the DVR ring buffer (400 snapshots of int16 IQ: about 24 MB at 1 bank, 98 MB at 4).
 * **Spectra.** Each snapshot is split into N-point segments (N = FFT size), and
   each segment is windowed with a Blackman window and transformed. The mean
   over segments gives the "average" trace (then smoothed across snapshots);
@@ -252,13 +273,13 @@ the gain settings. inspectrum, GNU Radio, SDR++ and numpy can read them.
 
 | Saved by | Where | Format | Contents |
 |---|---|---|---|
-| IQ snapshot | `captures/` | `ci16_le` | 15,360 contiguous pairs, raw ADC counts (−512…511) |
+| IQ snapshot | `captures/` | `ci16_le` | 15,360–61,440 contiguous pairs, raw ADC counts (−512…511) |
 | Trigger | `captures/triggers/` | `ci16_le` | as above, with an annotation giving the band, level and threshold |
 | DVR box, one file | `captures/box_…/box.*` | `cf32_le` | one capture segment per snapshot, each with its own timestamp |
 | DVR box, per snapshot | `captures/box_…/snapshot_*` | `cf32_le` | one recording per snapshot |
 
 Box recordings are a series of separate segments, each contiguous on its own,
-with gaps of about 50 ms between them (each segment's `core:datetime` says
+with gaps of 50–200 ms between them (each segment's `core:datetime` says
 when). Treat each segment as its own recording, not as one continuous signal.
 
 **Privacy:** by default, the board's MAC address isn't shown on screen or
@@ -270,8 +291,8 @@ written to any file. `--show-mac` turns both on.
 |---|---|
 | Tuning range (PLL lock) | 2220–2790 MHz (2210 failed to lock; this varies by chip) |
 | Span | 80 MHz at 80 Msps, 16 MHz at 16 Msps |
-| Snapshot | 15,360 pairs: 192 µs at 80 Msps, 960 µs at 16 Msps |
-| Snapshot rate | about 20 per second |
+| Snapshot | 1–4 banks of 15,360 pairs: 192–768 µs at 80 Msps, 0.96–3.84 ms at 16 Msps |
+| Snapshot rate | 20 / 10 / 6.6 / 5 per second for 1 / 2 / 3 / 4 banks |
 | Retune time | about 19 ms |
 | Samples | 10-bit I and Q; levels in dBFS, not calibrated power |
 
@@ -295,7 +316,9 @@ To rebuild the firmware you need eSpDR's source and ESP-IDF v5.5.3 or later;
 
 ## Ideas
 
-* Longer contiguous captures by chaining more of the four capture banks.
+* Continuous narrowband streaming: filter and decimate on the ESP32-S3 itself
+  (for example one 250 kHz channel) so the stream fits through the 12 Mbit/s
+  USB port.
 * A sweep mode that stitches the whole 2220–2790 MHz range into one view.
 * The full continuous experience: build [eSpDR](https://github.com/h0m3us3r/eSpDR).
 

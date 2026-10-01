@@ -12,43 +12,92 @@ index 3208949..6374103 100644
  SDK_CFLAGS := $(COMMON_FLAGS) -Os -std=gnu17 -freorder-blocks -fstrict-volatile-bitfields \
  	-fno-builtin-memcpy -fno-builtin-memset -fno-builtin-bzero \
 diff --git a/esp32s3/src/capture.c b/esp32s3/src/capture.c
-index 209e8ae..e0d2986 100644
+index 209e8ae..61fa9a3 100644
 --- a/esp32s3/src/capture.c
 +++ b/esp32s3/src/capture.c
-@@ -502,3 +502,49 @@ uint32_t capture_stat(unsigned index)
+@@ -502,3 +502,127 @@ uint32_t capture_stat(unsigned index)
      default: return 0;
      }
  }
 +
 +/*
-+ * Single-bank snapshot for hosts without the FPGA link. The writer fills
-+ * bank 0 from ring index 0 and is stopped before it wraps, so pairs
-+ * [SNAPSHOT_FIRST, SNAPSHOT_FIRST + SNAPSHOT_PAIRS) are one contiguous block.
-+ * Core 1 stays idle and the link outputs are not used. Returns the block, or
-+ * 0 if the writer missed its schedule or did not fill it.
++ * Snapshots for hosts without the FPGA link: one contiguous block of IQ from
++ * 1 to 4 capture banks, with core 1 idle and the link outputs unused.
++ *
++ * The writer starts in bank 0 at ring index 0. After SNAP_UNIT new pairs in a
++ * bank, core 0 switches it to the next bank, where the ring index carries on.
++ * Afterwards each bank's data is located exactly from the sentinels left
++ * around it, and the banks must join without a gap or overlap. A 4-bank
++ * snapshot overwrites the ROM's working memory at the top of bank 3, which
++ * is restored by capture_snapshot_done() once the block has been sent.
 + */
-+const uint32_t *capture_snapshot(void)
++#define SNAP_UNIT (SNAPSHOT_FIRST + SNAPSHOT_PAIRS + 64u) /* pairs per bank before switching */
++#define SNAP_BACK 128u   /* the end search starts this far before the switch index */
++#define SNAP_SCAN 4096u  /* and gives up this far after it */
++
++static snapshot_t snap;
++static bool snap_rom_saved;
++
++/* Ring index one past the data in bank b, searching from just before the
++ * write index observed at its switch. NOT_FOUND unless data precedes it. */
++static unsigned snap_find_end(unsigned b, unsigned switched_at)
 +{
-+    const unsigned stop_at = LINK_RING_PAIRS - 512u;
++    const uint32_t *p = bank(b);
++    unsigned at = (switched_at - SNAP_BACK) & RING_MASK;
++    if (p[at] == SENTINEL)
++        return NOT_FOUND;
++    for (unsigned i = 0; i < SNAP_SCAN; i++, at = (at + 1) & RING_MASK)
++        if (p[at] == SENTINEL)
++            return at;
++    return NOT_FOUND;
++}
++
++void capture_snapshot_done(void)
++{
++    if (snap_rom_saved) {
++        copy_words((volatile uint32_t *)ROM_DATA_BASE, rom_data, ROM_DATA_BYTES / 4);
++        memory_barrier();
++        snap_rom_saved = false;
++    }
++}
++
++static const snapshot_t *snap_capture(unsigned banks)
++{
 +    unsigned pairs_per_tick = radio_pairs_per_tick();
 +    uint32_t control = radio_dump_control();
++    uint32_t limit = 2u * SNAP_UNIT / pairs_per_tick; /* ticks allowed per bank */
++    unsigned switched[CAPTURE_BANKS];                 /* write index at each bank's end */
 +
-+    fill_sentinels(0, 0, LINK_RING_PAIRS);
++    if (banks == CAPTURE_BANKS) {
++        copy_words(rom_data, (volatile uint32_t *)ROM_DATA_BASE, ROM_DATA_BYTES / 4);
++        snap_rom_saved = true;
++    }
++    for (unsigned b = 0; b < banks; b++)
++        fill_sentinels(b, 0, LINK_RING_PAIRS);
++
 +    REG(DUMP_CTRL_REG) = control;
 +    REG(DUMP_BANK_SELECT_REG) = (REG(DUMP_BANK_SELECT_REG) & ~15u) | 1u;
 +    memory_barrier();
-+    uint32_t t0 = tick();
 +    REG(DUMP_CTRL_REG) = control | DUMP_CTRL_RUN;
 +    memory_barrier();
 +
-+    /* The write index restarts at 0; give up well before it could wrap. */
-+    uint32_t limit = 2u * stop_at / pairs_per_tick;
 +    bool late = false;
-+    while ((REG(DUMP_WRITE_INDEX_REG) & RING_MASK) < stop_at) {
-+        if (tick() - t0 > limit) {
-+            late = true;
-+            break;
++    unsigned from = 0;
++    for (unsigned b = 0; b < banks && !late; b++) {
++        uint32_t t0 = tick();
++        unsigned now;
++        while ((((now = REG(DUMP_WRITE_INDEX_REG) & RING_MASK) - from) & RING_MASK) < SNAP_UNIT) {
++            if (tick() - t0 > limit) {
++                late = true;
++                break;
++            }
 +        }
++        if (b + 1 < banks && !late) {
++            REG(DUMP_BANK_SELECT_REG) = (REG(DUMP_BANK_SELECT_REG) & ~15u) | (1u << (b + 1));
++            memory_barrier();
++        }
++        switched[b] = now;
++        from = now;
 +    }
 +    REG(DUMP_CTRL_REG) = control;
 +    memory_barrier();
@@ -58,45 +107,95 @@ index 209e8ae..e0d2986 100644
 +    if (late)
 +        return 0;
 +
-+    /* Samples use 20 bits, so a sentinel left in the block means a gap. */
-+    const uint32_t *p = bank(0) + SNAPSHOT_FIRST;
-+    for (unsigned i = 0; i < SNAPSHOT_PAIRS; i++)
-+        if (p[i] == SENTINEL)
++    /* Locate each bank's data and check that the banks join exactly. */
++    unsigned start = 0, skip = SNAPSHOT_FIRST, want = banks * SNAPSHOT_PAIRS;
++    snap.banks = banks;
++    snap.parts = 0;
++    snap.pairs = want;
++    for (unsigned b = 0; b < banks; b++) {
++        const uint32_t *p = bank(b);
++        if (p[start] == SENTINEL || (b && p[(start - 1) & RING_MASK] != SENTINEL))
++            return 0; /* this bank does not start where the previous one ended */
++        unsigned end = snap_find_end(b, switched[b]);
++        if (end == NOT_FOUND)
 +            return 0;
-+    return p;
++        unsigned count = (end - start) & RING_MASK;
++        if (count < SNAP_UNIT - SNAP_BACK)
++            return 0;
++        unsigned first = (start + skip) & RING_MASK, take = count - skip;
++        if (take > want)
++            take = want;
++        snap.part[snap.parts].bank = p;
++        snap.part[snap.parts].start = first;
++        snap.part[snap.parts].count = take;
++        snap.parts++;
++        want -= take;
++        skip = 0;
++        start = end;
++    }
++    return want ? 0 : &snap;
++}
++
++const snapshot_t *capture_snapshot(unsigned banks)
++{
++    const snapshot_t *s = snap_capture(banks);
++    if (!s)
++        capture_snapshot_done(); /* nothing will be sent */
++    return s;
 +}
 diff --git a/esp32s3/src/capture.h b/esp32s3/src/capture.h
-index 00e0125..adf248c 100644
+index 00e0125..de5d3ba 100644
 --- a/esp32s3/src/capture.h
 +++ b/esp32s3/src/capture.h
-@@ -12,3 +12,14 @@ unsigned capture_run(unsigned seconds);
+@@ -12,3 +12,27 @@ unsigned capture_run(unsigned seconds);
  
  /* Statistics of the last run, indexed by ESP_STAT_*. */
  uint32_t capture_stat(unsigned index);
 +
-+/* Pairs in one snapshot, and where the block starts in capture bank 0. */
++/* Pairs per capture bank in a snapshot; the block skips the first
++ * SNAPSHOT_FIRST pairs the writer produces. */
 +#define SNAPSHOT_PAIRS 15360u
 +#define SNAPSHOT_FIRST 256u
 +
++/* A captured block: `pairs` contiguous IQ pairs (I in bits 0..9, Q in bits
++ * 10..19 of each word) in up to four parts, each a run of ring indices from
++ * `start` (wrapping at LINK_RING_PAIRS) in one capture bank. */
++typedef struct {
++    unsigned banks, parts, pairs;
++    struct {
++        const uint32_t *bank;
++        unsigned start, count;
++    } part[4];
++} snapshot_t;
++
 +/*
-+ * Captures SNAPSHOT_PAIRS contiguous IQ pairs into capture bank 0 (I in
-+ * bits 0..9, Q in bits 10..19 of each word) with core 1 idle. Returns the
-+ * block, or 0 if the capture failed. Valid until the next capture.
++ * Captures banks * SNAPSHOT_PAIRS contiguous IQ pairs (banks 1..4) with core 1
++ * idle. Returns the block, or 0 if the capture failed. Valid until the next
++ * capture; call capture_snapshot_done() once it has been sent.
 + */
-+const uint32_t *capture_snapshot(void);
++const snapshot_t *capture_snapshot(unsigned banks);
++void capture_snapshot_done(void);
 diff --git a/esp32s3/src/main.c b/esp32s3/src/main.c
-index 3985162..408b0d3 100644
+index 3985162..5e79089 100644
 --- a/esp32s3/src/main.c
 +++ b/esp32s3/src/main.c
-@@ -36,6 +36,7 @@ static const unsigned link_signal[LINK_LINES] = {
+@@ -10,6 +10,7 @@
+ #include "board.h"
+ #include "capture.h"
+ #include "control.h"
++#include "link.h"
+ #include "hal/dedic_gpio_cpu_ll.h"
+ #include "hal/clk_gate_ll.h"
+ #include "hal/i2s_ll.h"
+@@ -36,6 +37,7 @@ static const unsigned link_signal[LINK_LINES] = {
  
  static uint8_t mac[6];
  static bool outputs_enabled;
-+static const uint32_t *snapshot; /* captured block awaiting transmission */
++static const snapshot_t *snapshot; /* captured block awaiting transmission */
  
  /* The on-board WS2812 retains its last colour through a CPU/RAM reload.
   * Send 24 zero bits on GPIO48; a static low alone does not clear it. */
-@@ -59,7 +60,7 @@ static void rgb_led_off(void)
+@@ -59,7 +61,7 @@ static void rgb_led_off(void)
  /* Continuous hardware MCLK, independent of both CPU-driven data lanes.
   * The restored crystal feeds the ESP BBPLL; PLL240 / 12 gives 20 MHz on
   * GPIO41 -> Br B12/F4. No DMA, I2S data transfer or per-edge CPU writes. */
@@ -105,7 +204,7 @@ index 3985162..408b0d3 100644
  {
      REG(GPIO_ENABLE_W1TC_REG) = 1u << 8; /* release former clock pad */
      REG(GPIO_ENABLE1_W1TC_REG) = 1u << 9;
-@@ -124,15 +125,20 @@ static void init_link(void)
+@@ -124,15 +126,20 @@ static void init_link(void)
  
  /* ---- control protocol ---------------------------------------------------------------- */
  
@@ -129,59 +228,75 @@ index 3985162..408b0d3 100644
  }
  
  static uint32_t load_le(const uint8_t *p, unsigned bytes)
-@@ -196,6 +202,14 @@ static uint8_t execute(uint8_t op, uint32_t arg, uint32_t *value)
+@@ -196,6 +203,16 @@ static uint8_t execute(uint8_t op, uint32_t arg, uint32_t *value)
              return CTL_NOT_READY;
          *value = capture_run(arg);
          return *value ? CTL_RUN_FAILED : CTL_OK;
 +    case ESP_SNAPSHOT:
 +        if (radio_stat(ESP_STAT_RADIO) != ESP_RADIO_OK)
 +            return CTL_NOT_READY;
-+        snapshot = capture_snapshot();
++        if (arg > CAPTURE_BANKS)
++            return CTL_BAD_ARGUMENT;
++        snapshot = capture_snapshot(arg ? arg : 1);
 +        if (!snapshot)
 +            return CTL_RUN_FAILED;
-+        *value = SNAPSHOT_PAIRS;
++        *value = snapshot->pairs;
 +        return CTL_OK;
      case ESP_STOP: /* the run, if any, has already ended */
      case ESP_ARG_HIGH: /* kept by the command loop */
          return CTL_OK;
-@@ -204,6 +218,36 @@ static uint8_t execute(uint8_t op, uint32_t arg, uint32_t *value)
+@@ -204,6 +221,50 @@ static uint8_t execute(uint8_t op, uint32_t arg, uint32_t *value)
      }
  }
  
-+/* Sends the captured block after its response, 20 bits per pair. */
++/* Sends the captured block after its response, 20 bits per pair, then
++ * releases the capture memory. */
 +static void send_snapshot(void)
 +{
 +    uint8_t header[12] = {'S', 'N', 'A', 'P'};
-+    store_le(header + 4, SNAPSHOT_PAIRS, 4);
++    store_le(header + 4, snapshot->pairs, 4);
 +    store_le(header + 8, SNAPSHOT_FIRST, 4);
 +    serial_write(header, sizeof(header));
 +    uint32_t crc = crc32_update(0xFFFFFFFFu, header, sizeof(header));
 +
 +    uint8_t chunk[320]; /* 128 pairs, five 64-byte USB packets */
 +    unsigned used = 0;
-+    for (unsigned i = 0; i < SNAPSHOT_PAIRS; i += 2) {
-+        uint32_t a = snapshot[i] & 0xFFFFFu, b = snapshot[i + 1] & 0xFFFFFu;
-+        chunk[used++] = (uint8_t)a;
-+        chunk[used++] = (uint8_t)(a >> 8);
-+        chunk[used++] = (uint8_t)(a >> 16 | b << 4);
-+        chunk[used++] = (uint8_t)(b >> 4);
-+        chunk[used++] = (uint8_t)(b >> 12);
-+        if (used == sizeof(chunk)) {
-+            serial_write(chunk, used);
-+            crc = crc32_update(crc, chunk, used);
-+            used = 0;
++    uint32_t held = 0; /* first pair of the next two, which may span parts */
++    bool holding = false;
++    for (unsigned k = 0; k < snapshot->parts; k++) {
++        const uint32_t *p = snapshot->part[k].bank;
++        for (unsigned i = 0, at = snapshot->part[k].start; i < snapshot->part[k].count;
++             i++, at = (at + 1) & (LINK_RING_PAIRS - 1)) {
++            uint32_t b = p[at] & 0xFFFFFu;
++            if (!holding) {
++                held = b;
++                holding = true;
++                continue;
++            }
++            holding = false;
++            chunk[used++] = (uint8_t)held;
++            chunk[used++] = (uint8_t)(held >> 8);
++            chunk[used++] = (uint8_t)(held >> 16 | b << 4);
++            chunk[used++] = (uint8_t)(b >> 4);
++            chunk[used++] = (uint8_t)(b >> 12);
++            if (used == sizeof(chunk)) {
++                serial_write(chunk, used);
++                crc = crc32_update(crc, chunk, used);
++                used = 0;
++            }
 +        }
 +    }
 +    uint8_t trailer[4];
 +    store_le(trailer, ~crc, 4);
 +    serial_write(trailer, sizeof(trailer));
 +    snapshot = 0;
++    capture_snapshot_done();
 +}
 +
  void app_main(void)
  {
      platform_init();
-@@ -212,7 +256,9 @@ void app_main(void)
+@@ -212,7 +273,9 @@ void app_main(void)
      start_core1();
      read_mac(mac);
      radio_init();
@@ -191,7 +306,7 @@ index 3985162..408b0d3 100644
  
      uint8_t request[CTL_REQUEST_BYTES];
      unsigned received = 0;
-@@ -259,6 +305,8 @@ void app_main(void)
+@@ -259,6 +322,8 @@ void app_main(void)
          uint8_t status = execute(op, (uint32_t)arg_high << 16 | arg, &value);
          arg_high = op == ESP_ARG_HIGH ? arg : 0;
          reply(op, status, sequence, value);
@@ -201,17 +316,19 @@ index 3985162..408b0d3 100644
      }
  }
 diff --git a/protocol/control.h b/protocol/control.h
-index 4113dba..f5cdad8 100644
+index 4113dba..99b8769 100644
 --- a/protocol/control.h
 +++ b/protocol/control.h
-@@ -49,6 +49,11 @@
+@@ -49,6 +49,13 @@
  #define ESP_RUN 17     /* arg: seconds (1..65535), or 0 to run until stopped */
  #define ESP_STOP 18    /* sent while RUN is active: finish the current unit pair */
  #define ESP_ARG_HIGH 19 /* arg: bits 16..31 of the next operation's argument */
-+/* Capture one block without the FPGA. After an OK response the ESP sends
-+ * "SNAP", pairs:u32, first:u32, then the pairs packed two per five bytes
-+ * (I0 | Q0 << 10 | I1 << 20 | Q1 << 30, little-endian 40 bits), then the
-+ * CRC32 of everything from "SNAP". Answered CTL_NOT_READY without a radio. */
++/* Capture one contiguous block without the FPGA, arg 1..4 capture banks
++ * (0: 1) of 15360 pairs each. After an OK response (value: pairs) the ESP
++ * sends "SNAP", pairs:u32, first:u32, then the pairs packed two per five
++ * bytes (I0 | Q0 << 10 | I1 << 20 | Q1 << 30, little-endian 40 bits), then
++ * the CRC32 of everything from "SNAP". Answered CTL_NOT_READY without a
++ * radio and CTL_RUN_FAILED if the banks did not join exactly. */
 +#define ESP_SNAPSHOT 40
  
  /*

@@ -1,7 +1,7 @@
 """eSpDRmini: live spectrum and waterfall from eSpDR snapshots on an ESP32-S3 (no FPGA).
 
-Each snapshot is 15,360 contiguous IQ pairs (192 us at 80 Msps, 0.96 ms at
-16 Msps); about 20 arrive per second. The display is a series of short looks
+Each snapshot is 1 to 4 capture banks of 15,360 contiguous IQ pairs (192 us
+to 768 us at 80 Msps, 0.96 to 3.84 ms at 16 Msps); 20 to 5 arrive per second. The display is a series of short looks
 at the band, not a continuous stream, so brief bursts can fall between them.
 
 Features: markers with delta (SNR), Wi-Fi/BLE channel overlays, a burst
@@ -32,7 +32,8 @@ PREFS = os.path.join(HERE, ".viewer_prefs.json")  # display choices kept between
 LO_MIN, LO_MAX = 2220.0, 2790.0  # PLL lock range measured on the reference board
 FFT_SIZES = (1024, 2048, 4096, 8192)
 DEFAULTS = {"meter": True, "overlay": 0, "fft": 2048, "avg": 0.7, "floor": -85.0, "ceiling": -15.0,
-            "wf": 0, "trig_thr": -40.0, "trig_hold": 0.5, "trig_max": 50, "page": 0, "box_mode": 0}
+            "wf": 0, "trig_thr": -40.0, "trig_hold": 0.5, "trig_max": 50, "page": 0, "box_mode": 0,
+            "banks": 1}
 
 # TMOG palette (tmog.org :root).
 INK, INK2, PANEL, RAISED = "#070b0f", "#0b1117", "#0e151c", "#111a22"
@@ -54,6 +55,7 @@ class Receiver(threading.Thread):
         self.requests = queue.Queue()
         self.running = True
         self.paused = False
+        self.banks = 1  # capture banks per snapshot, 15,360 pairs each
         self.error = None
         self.settings = self._read_settings()
 
@@ -83,7 +85,7 @@ class Receiver(threading.Thread):
                 if self.paused:  # settings still apply; capture resumes on play
                     time.sleep(0.02)
                     continue
-                iq = self.esp.snapshot()
+                iq = self.esp.snapshot(self.banks)
                 frame = (iq, dict(self.settings), dsp.now_utc())
                 try:
                     self.frames.put_nowait(frame)
@@ -110,6 +112,10 @@ def connect(port, reload):
     mac = (esp.command(espctl.CTL_INFO, 1).to_bytes(4, "little")
            + esp.command(espctl.CTL_INFO, 2).to_bytes(2, "little"))
     return esp, {"firmware": esp.command(espctl.CTL_INFO, 0), "mac": mac.hex(":")}
+
+
+def duration(seconds):
+    return f"{seconds * 1e6:.0f} µs" if seconds < 1e-3 else f"{seconds * 1e3:.2f} ms"
 
 
 def load_prefs():
@@ -317,14 +323,16 @@ def main():
     label(sx, 0.507, "40–55 indoors  ·  70+ clips", 6.5, MUTED2)
     label(sx, 0.475, "Sample rate", 8)
     Segmented([sx, 0.437, sw, 0.032], ("80 Msps", "16 Msps"), 0 if args.rate == 80 else 1,
-              lambda i: (rx.set(espctl.ESP_SET_RATE, i), state.update(hold=None)))
-    caps(sx, 0.40, "band guide")
+              lambda i: (rx.set(espctl.ESP_SET_RATE, i), state.update(hold=None), length_labels(i)))
+    length_label = label(sx, 0.405, "Snapshot length", 8)
+    length_seg = Segmented([sx, 0.368, sw, 0.031], ("1", "2", "3", "4"), prefs["banks"] - 1,
+                           lambda i: set_banks(i + 1), size=8)
+    caps(sx, 0.335, "band guide")
     guide = [("Wi-Fi ch 1 / 6 / 11", "2412 / 2437 / 2462", GREEN),
              ("BLE advertising", "2402 / 2426 / 2480", PURPLE),
-             ("ISM band", "2400 – 2483.5", CYAN),
              ("Microwave ovens", "≈ 2450, broad", ORANGE)]
     for i, (name, freq, color) in enumerate(guide):
-        y = 0.37 - i * 0.037
+        y = 0.305 - i * 0.037
         fig_rect((sx, y + 0.004), 0.004, 0.022, color)
         label(sx + 0.01, y + 0.014, name, 8, TEXT)
         label(sx + 0.01, y, freq, 7, MUTED, family=MONO)
@@ -550,6 +558,20 @@ def main():
             request_lo(float(text), lo_box)
         except ValueError:
             pass
+
+    def length_labels(rate_index):
+        unit = 15360 / (80e6 if rate_index == 0 else 16e6)
+        for k, b in enumerate(length_seg.buttons):
+            d = (k + 1) * unit
+            b.label.set_text(f"{d * 1e6:.0f} µs" if d < 1e-3 else f"{d * 1e3:.1f} ms")
+        fig.canvas.draw_idle()
+
+    def set_banks(n):
+        prefs["banks"] = n
+        save_prefs()
+        rx.banks = n
+        length_label.set_text(f"Snapshot length  ·  {n * 15360:,} pairs  ·  ≈ {20 / n:.0f}/s")
+        state["hold"] = None
 
     # ---- display ----
     def layout_meter(_label=None):
@@ -858,7 +880,7 @@ def main():
         state["last_file"] = os.path.basename(base)
         kb = os.path.getsize(base + ".sigmf-data") / 1024
         toast(f"Saved captures/{os.path.basename(base)}.sigmf-data  ·  {len(iq):,} pairs  ·  "
-              f"{len(iq) / settings['rate'] * 1e6:.0f} µs  ·  {kb:.0f} KB  (+ .sigmf-meta)", CYAN)
+              f"{duration(len(iq) / settings['rate'])}  ·  {kb:.0f} KB  (+ .sigmf-meta)", CYAN)
         print("saved", base + ".sigmf-data")
         repaint()
 
@@ -952,6 +974,7 @@ def main():
     def reset_span(settings, iq_len):
         lo_hz, rate = settings["lo_hz"], settings["rate"]
         state["span"] = (lo_hz, rate)
+        state["iq_len"] = iq_len
         state["f"] = f = dsp.frequencies(lo_hz, rate, state["n"])
         state["avg"] = state["hold"] = None
         waterfall["a"][:] = state["vmin"]
@@ -964,7 +987,7 @@ def main():
         window_span.set_x(lo - r / 2)
         window_span.set_width(r)
         tune_hint.set_text(f"window {lo - r / 2:.1f} – {lo + r / 2:.1f} MHz")
-        snap_hint.set_text(f"{iq_len:,} pairs · {iq_len / rate * 1e6:.0f} µs · SigMF → captures/")
+        snap_hint.set_text(f"{iq_len:,} pairs · {duration(iq_len / rate)} · SigMF → captures/")
         wf_hint.set_text(f"last {rows} snapshots kept as IQ  ·  drag a box to save part of it")
         band = state["trig_band"]
         if band and not (f[0] <= band[0] and band[1] <= f[-1]):
@@ -983,7 +1006,7 @@ def main():
                 continue
             got = True
             iq, settings, when = frame
-            if (settings["lo_hz"], settings["rate"]) != state["span"]:
+            if (settings["lo_hz"], settings["rate"]) != state["span"] or len(iq) != state.get("iq_len"):
                 reset_span(settings, len(iq))
             mean, peak = dsp.spectrum(iq, state["n"], window["w"])
             a = avg_slider.val
@@ -1034,7 +1057,7 @@ def main():
         stats["LO"].set_text(f"{lo:.4f} MHz")
         stats["Span · RBW"].set_text(f"{rate / 1e6:.0f} MHz · {rate / state['n'] / 1e3:.1f} kHz")
         stats["Gain (rf / bb)"].set_text(f"{settings['gain']}  ({settings['rf_gain']} / {settings['bb_gain']})")
-        stats["Snapshot"].set_text(f"{len(iq):,} pairs · {len(iq) / rate * 1e6:.0f} µs")
+        stats["Snapshot"].set_text(f"{len(iq):,} pairs · {duration(len(iq) / rate)}")
         stats["Rate"].set_text("paused" if rx.paused else f"{rate_now:.1f} snapshots/s")
         stats["Clipped"].set_text(f"{clip:.2f} %")
         stats["Clipped"].set_color(RED if clip > 0.1 else TEXT)
@@ -1071,6 +1094,8 @@ def main():
 
     # ---- start --------------------------------------------------------------------------------
     set_range()
+    set_banks(prefs["banks"])
+    length_labels(0 if args.rate == 80 else 1)
     set_overlay(prefs["overlay"])
     layout_meter()
     describe_box()

@@ -31,7 +31,8 @@ STAT = {"radio": 13, "lo_hz": 15, "rate": 16, "width": 17, "filter": 18, "gain":
 RATE_SPS = {0: 80e6, 1: 16e6}
 
 SNAP_MAGIC = b"SNAP"
-SNAP_PAIRS = 15360
+SNAP_PAIRS = 15360  # per capture bank
+MAX_BANKS = 4
 
 
 class ControlError(Exception):
@@ -123,16 +124,17 @@ class Esp:
         return {k: self.stat(k) for k in ("radio", "lo_hz", "rate", "width", "filter", "gain",
                                           "rf_gain", "bb_gain")}
 
-    def snapshot(self):
-        """One block of SNAP_PAIRS contiguous IQ pairs as complex64 (raw ADC counts)."""
+    def snapshot(self, banks=1):
+        """One block of banks * SNAP_PAIRS contiguous IQ pairs (banks 1-4) as
+        complex64, in raw ADC counts."""
         import numpy as np
-        seq = self._send(ESP_SNAPSHOT, 0)
+        seq = self._send(ESP_SNAPSHOT, banks)
         status, value = self._response(ESP_SNAPSHOT, seq)
         if status != 0:
             raise ControlError(f"snapshot: {STATUS_NAMES.get(status, status)}")
         header = self._read_exact(12)
         magic, pairs, _first = struct.unpack("<4sII", header)
-        if magic != SNAP_MAGIC or pairs != SNAP_PAIRS:
+        if magic != SNAP_MAGIC or pairs != banks * SNAP_PAIRS:
             raise ControlError(f"bad snapshot header {header!r}")
         payload = self._read_exact(pairs * 5 // 2)
         crc = struct.unpack("<I", self._read_exact(4))[0]
@@ -157,6 +159,8 @@ def main():
     sub.add_parser("status", help="identity and receiver settings")
     sp = sub.add_parser("snap", help="capture snapshots and print statistics")
     sp.add_argument("-n", type=int, default=5)
+    sp.add_argument("--banks", type=int, default=1, choices=range(1, MAX_BANKS + 1),
+                    help="capture banks per snapshot: 15,360 pairs each")
     sp.add_argument("--save", help="write the last snapshot as interleaved int16 .cs16")
     args = ap.parse_args()
     port = args.port or find_port()
@@ -178,7 +182,7 @@ def main():
         import numpy as np
         t0 = time.time()
         for _ in range(args.n):
-            iq = esp.snapshot()
+            iq = esp.snapshot(args.banks)
         dt = (time.time() - t0) / args.n
         print(f"{args.n} snapshots of {len(iq)} pairs, {dt * 1000:.0f} ms each ({1 / dt:.1f}/s)")
         print(f"I mean {iq.real.mean():+.1f} rms {iq.real.std():.1f} range {iq.real.min():.0f}..{iq.real.max():.0f}; "
