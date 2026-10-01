@@ -1,0 +1,5 @@
+.venv/
+__pycache__/
+captures/
+.viewer_prefs.json
+.DS_Store
