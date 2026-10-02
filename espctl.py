@@ -21,13 +21,16 @@ ESP_SET_LO, ESP_SET_RATE, ESP_SET_WIDTH, ESP_SET_FILTER = 20, 21, 22, 23
 ESP_SET_GAIN, ESP_SET_RF_GAIN, ESP_SET_BB_GAIN, ESP_SET_DC, ESP_SET_IQ = 24, 25, 26, 27, 28
 ESP_SNAPSHOT = 40  # added by the snapshot firmware
 ESP_AUTO = 0x8000
-FIRMWARE_ID = 0x49515305
+FIRMWARE_ID = 0x49515306
+LO_MIN_HZ, LO_MAX_HZ = 1841666667, 2790000000
+LO_MODE_NAMES = {1: "normal", 2: "5/6"}
 
 STATUS_NAMES = {0: "OK", 1: "UNKNOWN_OP", 2: "BAD_ARGUMENT", 3: "BUSY", 4: "NOT_READY",
                 5: "RUN_FAILED", 6: "FAILED"}
 RADIO_NAMES = {0: "OK", 1: "PHY_FAILED", 2: "PLL_FAILED", 3: "PBUS_FAILED"}
 STAT = {"radio": 13, "lo_hz": 15, "rate": 16, "width": 17, "filter": 18, "gain": 19,
-        "rf_gain": 20, "bb_gain": 21, "iq": 26, "automatic": 27, "pll": 28}
+        "rf_gain": 20, "bb_gain": 21, "iq": 26, "automatic": 27, "pll": 28,
+        "lo_mode": 29, "pll_hz": 30, "sdm_word": 31}
 RATE_SPS = {0: 80e6, 1: 16e6}
 
 SNAP_MAGIC = b"SNAP"
@@ -136,7 +139,7 @@ class Esp:
 
     def settings(self):
         return {k: self.stat(k) for k in ("radio", "lo_hz", "rate", "width", "filter", "gain",
-                                          "rf_gain", "bb_gain")}
+                                          "rf_gain", "bb_gain", "lo_mode", "pll_hz", "sdm_word")}
 
     def snapshot(self, banks=1):
         """One block of banks * SNAP_PAIRS contiguous IQ pairs (banks 1-4) as
@@ -189,6 +192,7 @@ def main():
     print(line)
     s = esp.settings()
     print(f"radio {RADIO_NAMES.get(s['radio'], s['radio'])}, LO {s['lo_hz'] / 1e6:.6f} MHz, "
+          f"conversion {LO_MODE_NAMES.get(s['lo_mode'], s['lo_mode'])} (PLL {s['pll_hz'] / 1e6:.6f} MHz), "
           f"rate {RATE_SPS[s['rate']] / 1e6:.0f} Msps, width {s['width']} MHz, filter {s['filter']}, "
           f"gain {s['gain']} (rf {s['rf_gain']}, bb {s['bb_gain']})")
     if args.cmd == "snap":

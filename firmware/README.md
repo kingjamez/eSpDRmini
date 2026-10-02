@@ -1,7 +1,7 @@
 # Snapshot firmware
 
 `espdr-snapshot.bin` is the [eSpDR](https://github.com/h0m3us3r/eSpDR) ESP32-S3
-firmware (upstream commit `41a0ffe`) with `espdr-snapshot.patch` applied,
+firmware (upstream commit `f279bf823eee41796dfd1ac21f13e1ed9b418c82`) with `espdr-snapshot.patch` applied,
 built with `-DNO_FORWARDED_CLOCK`. It runs from RAM: the viewer loads it with
 `esptool --no-stub load-ram`, nothing is written to flash, and a power cycle
 restores whatever the board had before.
@@ -18,11 +18,24 @@ memory that overlaps bank 3. The normal FPGA streaming path is unchanged.
 Requires ESP-IDF **v5.5.3 or later** (v5.5.1 lacks `I2S_CLK_SRC_PLL_240M`).
 
     git clone https://github.com/h0m3us3r/eSpDR && cd eSpDR
-    git checkout 41a0ffe
+    git checkout f279bf823eee41796dfd1ac21f13e1ed9b418c82
     git apply /path/to/eSpDRmini/firmware/espdr-snapshot.patch
     . $IDF_PATH/export.sh
     make -C esp32s3 BUILD=build-snapshot EXTRA_CFLAGS=-DNO_FORWARDED_CLOCK
     cp esp32s3/build-snapshot/iq-source.bin /path/to/eSpDRmini/firmware/espdr-snapshot.bin
+
+The bundled image was built with ESP-IDF **v5.5.5** and the
+`esp-14.2.0_20260121` Xtensa toolchain. It reports firmware ID `0x49515306`
+and includes upstream's [5/6 LO extension](https://github.com/h0m3us3r/eSpDR/blob/f279bf823eee41796dfd1ac21f13e1ed9b418c82/docs/LO-EXTENSION.md).
+Requests below 2210 MHz select 5/6 conversion automatically; higher requests
+use normal conversion. The effective LO request range is 1,841,666,667 to
+2,790,000,000 Hz, subject to each board's PLL lock range. Failed tunes restore
+the previous LO and conversion mode. Gain, filter, width and sample-rate
+changes retain the selected mode. Snapshot framing and sample packing are
+unchanged.
+
+Use `--reload` when replacing firmware that already reports this ID. The
+original eSpDR streaming image has the same ID as this snapshot build.
 
 ## Licenses of the binary's contents
 

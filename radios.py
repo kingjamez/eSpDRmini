@@ -65,6 +65,12 @@ class Radio:
     def snapshot(self, banks=1): raise NotImplementedError
     def close(self): pass
 
+    def tune_mhz(self, mhz):
+        """Round a UI request, then clamp so rounding cannot cross an endpoint."""
+        lo, hi = self.ui_range_mhz
+        mhz = min(max(mhz, lo), hi)
+        return min(max(round(mhz / self.lo_step_mhz) * self.lo_step_mhz, lo), hi)
+
 
 # ---- eSpDR (snapshot patch) ------------------------------------------------------------
 
@@ -73,7 +79,8 @@ class EspdrRadio(Radio):
     chip = "ESP32-S3"
     hw = "ESP32-S3 internal Wi-Fi/BT receiver, eSpDR snapshot firmware"
     rates = (80e6, 16e6)
-    lo_range_mhz = ui_range_mhz = (2220.0, 2790.0)  # PLL lock measured on the reference board
+    # Request limits, with PLL lock still checked separately on each board.
+    lo_range_mhz = ui_range_mhz = (espctl.LO_MIN_HZ / 1e6, espctl.LO_MAX_HZ / 1e6)
     lo_step_mhz = 0.0005
     gain_max = 82
     max_banks = espctl.MAX_BANKS
@@ -89,7 +96,9 @@ class EspdrRadio(Radio):
     def settings(self):
         s = self.esp.settings()
         return {"lo_hz": s["lo_hz"], "rate": espctl.RATE_SPS[s["rate"]], "gain": s["gain"], "agc": False,
-                "gain_detail": f"rf {s['rf_gain']} / bb {s['bb_gain']}"}
+                "gain_detail": f"rf {s['rf_gain']} / bb {s['bb_gain']}",
+                "lo_mode": espctl.LO_MODE_NAMES[s["lo_mode"]], "pll_hz": s["pll_hz"],
+                "sdm_word": s["sdm_word"]}
 
     def set_lo(self, hz):
         self.esp.command(espctl.ESP_SET_LO, int(round(hz)))
