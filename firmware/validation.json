@@ -1,0 +1,352 @@
+{
+  "tested_firmware_sha256": "85b205a15ddb211b73c52f35672f7f68cf5125034ef6dc55dfd6a1d2128335ed",
+  "upstream_espdr_commit": "f279bf823eee41796dfd1ac21f13e1ed9b418c82",
+  "build": {
+    "idf": "5.5.5",
+    "compiler": "esp-14.2.0_20260121",
+    "flags": "-DNO_FORWARDED_CLOCK",
+    "fresh_rebuild_identical": true
+  },
+  "host": "Linux; Python 3.14.4; matplotlib 3.11.2; esptool 5.4.0",
+  "board": "ESP32-S3 revision 0.2, 40 MHz crystal, native USB Serial/JTAG",
+  "snapshot_matrix": {
+    "lo_requests_hz": [
+      1841666667,
+      1842000000,
+      1900000000,
+      2000000000,
+      2130000000,
+      2209999999,
+      2210000000,
+      2440000000,
+      2700000000,
+      2780000000
+    ],
+    "sample_rates": [
+      16000000,
+      80000000
+    ],
+    "banks": [
+      1,
+      2,
+      3,
+      4
+    ],
+    "captures_per_cell": 10,
+    "total_captures": 800,
+    "total_pairs": 30720000,
+    "capture_or_crc_errors": 0,
+    "maximum_transfer_ms": 221.33792890235782
+  },
+  "rollback_checks": [
+    {
+      "from_hz": 2000000000,
+      "rejected_hz": 1841666666,
+      "error": "op 20 arg 1841666666: BAD_ARGUMENT",
+      "settings_unchanged": true,
+      "capture_after": true
+    },
+    {
+      "from_hz": 2000000000,
+      "rejected_hz": 2790000001,
+      "error": "op 20 arg 2790000001: BAD_ARGUMENT",
+      "settings_unchanged": true,
+      "capture_after": true
+    },
+    {
+      "from_hz": 2000000000,
+      "rejected_hz": 2790000000,
+      "error": "op 20 arg 2790000000: FAILED",
+      "settings_unchanged": true,
+      "capture_after": true
+    },
+    {
+      "from_hz": 2440000000,
+      "rejected_hz": 1841666666,
+      "error": "op 20 arg 1841666666: BAD_ARGUMENT",
+      "settings_unchanged": true,
+      "capture_after": true
+    },
+    {
+      "from_hz": 2440000000,
+      "rejected_hz": 2790000001,
+      "error": "op 20 arg 2790000001: BAD_ARGUMENT",
+      "settings_unchanged": true,
+      "capture_after": true
+    },
+    {
+      "from_hz": 2440000000,
+      "rejected_hz": 2790000000,
+      "error": "op 20 arg 2790000000: FAILED",
+      "settings_unchanged": true,
+      "capture_after": true
+    }
+  ],
+  "setting_preservation": [
+    {
+      "op": 24,
+      "value": 35,
+      "mode_preserved": true
+    },
+    {
+      "op": 24,
+      "value": 55,
+      "mode_preserved": true
+    },
+    {
+      "op": 22,
+      "value": 20,
+      "mode_preserved": true
+    },
+    {
+      "op": 22,
+      "value": 40,
+      "mode_preserved": true
+    },
+    {
+      "op": 23,
+      "value": 16191,
+      "mode_preserved": true
+    },
+    {
+      "op": 23,
+      "value": 0,
+      "mode_preserved": true
+    },
+    {
+      "op": 21,
+      "value": 0,
+      "mode_preserved": true
+    },
+    {
+      "op": 21,
+      "value": 1,
+      "mode_preserved": true
+    }
+  ],
+  "mode_transitions": 40,
+  "qualification": "Functional snapshot and tuning checks on one board. Board-dependent PLL lock, antenna response, RF sensitivity and sustained continuous reception are separate from this snapshot feature.",
+  "combined_tests": {
+    "unit_tests_passed": 16,
+    "three_branches_merge_without_conflicts": true,
+    "live_combined_detection_and_export": true,
+    "live_viewer_callbacks": {
+      "endpoint_and_mode_changes": true,
+      "pause_and_resume": true,
+      "narrow_export_rejected": true,
+      "valid_export_saved": true
+    }
+  },
+  "rf_validation": {
+    "status": "passed at the listed discrete frequencies",
+    "connection": "B205-mini TX/RX -> coax -> attenuator -> ESP RF input; no antennas in the conducted path",
+    "source": "USRP B205-mini, 1 Msps, 45 dB TX gain, amplitude 0.02, 0.5-second finite CW bursts",
+    "source_lo_offsets_hz": [
+      375000,
+      -375000
+    ],
+    "accepted_bursts": 37,
+    "source_event_errors": 0,
+    "clipped_samples": 0,
+    "source_worker_stopped": true,
+    "points": [
+      {
+        "requested_lo_hz": 1841666667,
+        "sample_rate": 80000000.0,
+        "mode": "5/6",
+        "pll_hz": 2210000153,
+        "source_hz": 1843041666.9994578,
+        "if_hz": 1301269.53125,
+        "source_on_off_contrast_db": 24.640181556392363,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 1841666667,
+        "sample_rate": 16000000.0,
+        "mode": "5/6",
+        "pll_hz": 2210000153,
+        "source_hz": 1843041666.9994578,
+        "if_hz": 1301147.4609375,
+        "source_on_off_contrast_db": 26.136523514418144,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 1900000000,
+        "sample_rate": 80000000.0,
+        "mode": "5/6",
+        "pll_hz": 2280000000,
+        "source_hz": 1901374999.9999964,
+        "if_hz": 1298828.125,
+        "source_on_off_contrast_db": 25.579232729976773,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 1900000000,
+        "sample_rate": 16000000.0,
+        "mode": "5/6",
+        "pll_hz": 2280000000,
+        "source_hz": 1901374999.9999964,
+        "if_hz": 1298950.1953125,
+        "source_on_off_contrast_db": 25.520824714732925,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 2000000000,
+        "sample_rate": 80000000.0,
+        "mode": "5/6",
+        "pll_hz": 2400000000,
+        "source_hz": 2001374999.9999964,
+        "if_hz": 1294860.83984375,
+        "source_on_off_contrast_db": 22.649751161299463,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 2000000000,
+        "sample_rate": 16000000.0,
+        "mode": "5/6",
+        "pll_hz": 2400000000,
+        "source_hz": 2001374999.9999964,
+        "if_hz": 1295043.9453125,
+        "source_on_off_contrast_db": 23.008926911082447,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 2130000000,
+        "sample_rate": 80000000.0,
+        "mode": "5/6",
+        "pll_hz": 2555999908,
+        "source_hz": 2131374999.9999983,
+        "if_hz": 1289978.02734375,
+        "source_on_off_contrast_db": 18.932059841195027,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 2130000000,
+        "sample_rate": 16000000.0,
+        "mode": "5/6",
+        "pll_hz": 2555999908,
+        "source_hz": 2131374999.9999983,
+        "if_hz": 1289916.9921875,
+        "source_on_off_contrast_db": 20.726604598537563,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 2209000000,
+        "sample_rate": 80000000.0,
+        "mode": "5/6",
+        "pll_hz": 2650800018,
+        "source_hz": 2210374999.9999967,
+        "if_hz": 1286621.09375,
+        "source_on_off_contrast_db": 20.81742451547548,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 2209000000,
+        "sample_rate": 16000000.0,
+        "mode": "5/6",
+        "pll_hz": 2650800018,
+        "source_hz": 2210374999.9999967,
+        "if_hz": 1286682.12890625,
+        "source_on_off_contrast_db": 22.569781774490238,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 2210000000,
+        "sample_rate": 80000000.0,
+        "mode": "normal",
+        "pll_hz": 2210000153,
+        "source_hz": 2211374999.999998,
+        "if_hz": 1286621.09375,
+        "source_on_off_contrast_db": 22.553685672349843,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 2210000000,
+        "sample_rate": 16000000.0,
+        "mode": "normal",
+        "pll_hz": 2210000153,
+        "source_hz": 2211374999.999998,
+        "if_hz": 1286560.05859375,
+        "source_on_off_contrast_db": 22.353310597546205,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 2440000000,
+        "sample_rate": 80000000.0,
+        "mode": "normal",
+        "pll_hz": 2439999847,
+        "source_hz": 2441374999.999996,
+        "if_hz": 1277770.99609375,
+        "source_on_off_contrast_db": 28.72124704257294,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 2440000000,
+        "sample_rate": 16000000.0,
+        "mode": "normal",
+        "pll_hz": 2439999847,
+        "source_hz": 2441374999.999996,
+        "if_hz": 1277709.9609375,
+        "source_on_off_contrast_db": 30.703138225850957,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 2700000000,
+        "sample_rate": 80000000.0,
+        "mode": "normal",
+        "pll_hz": 2700000000,
+        "source_hz": 2701374999.999996,
+        "if_hz": 1267089.84375,
+        "source_on_off_contrast_db": 25.72863837131532,
+        "clip_fraction": 0.0
+      },
+      {
+        "requested_lo_hz": 2700000000,
+        "sample_rate": 16000000.0,
+        "mode": "normal",
+        "pll_hz": 2700000000,
+        "source_hz": 2701374999.999996,
+        "if_hz": 1267211.9140625,
+        "source_on_off_contrast_db": 29.717883767021,
+        "clip_fraction": 0.0
+      }
+    ],
+    "conversion_fits": [
+      {
+        "sample_rate": 80000000.0,
+        "normal_slope": 1.000040178893094,
+        "alternate_slope": 0.8333664729043584,
+        "ratio": 0.8333329905072212
+      },
+      {
+        "sample_rate": 16000000.0,
+        "normal_slope": 1.00003979805787,
+        "alternate_slope": 0.8333663935144103,
+        "ratio": 0.8333332284703587
+      }
+    ],
+    "followups": [
+      {
+        "label": "source_step",
+        "frequency_delta_hz": 249938.96484375,
+        "level_delta_db": 0.26353920819967414
+      },
+      {
+        "label": "receiver_step",
+        "frequency_delta_hz": -249938.96484375,
+        "level_delta_db": 0.8452047542802035
+      },
+      {
+        "label": "half_amplitude",
+        "frequency_delta_hz": 0.0,
+        "level_delta_db": -5.473562233004699
+      },
+      {
+        "label": "other_source_lo",
+        "frequency_delta_hz": 0.0,
+        "level_delta_db": 0.5355077419628813
+      }
+    ],
+    "limits": "Nominal receiver frequencies, without crystal correction. This checks wanted-tone reception and frequency conversion; delivered RF power and antenna sensitivity were not calibrated."
+  }
+}

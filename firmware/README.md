@@ -37,6 +37,33 @@ unchanged.
 Use `--reload` when replacing firmware that already reports this ID. The
 original eSpDR streaming image has the same ID as this snapshot build.
 
+## Validation
+
+`python -m unittest discover -s tests -v` runs the host regression tests.
+The upstream `tests/lo_plan_test.c` and `tests/radio_tuning_test.py` also pass
+against the patched source, covering frequency planning, conversion changes,
+register preservation and failed-tune rollback. A fresh checkout with this
+patch and the toolchain above reproduces the bundled image byte for byte.
+
+[validation.json](validation.json) records the finite checks on an ESP32-S3:
+800 snapshots across ten LO requests, both rates and all four bank sizes;
+40 conversion transitions; six rejected-tune recovery checks; and eight
+gain/filter/width/rate changes retaining 5/6 mode. Every matrix snapshot passed
+the firmware's bank-join checks and the host CRC check. The tested board locked
+at the lower endpoint and at 2780 MHz; 2790 MHz failed and restored the previous
+mode. These are functional results for this board, not antenna sensitivity or
+continuous-reception qualification.
+
+Conducted B205-mini tones were received at eight LO settings from the lower
+endpoint to 2700 MHz, at both 16 and 80 Msps. Source-on/off contrast was
+18.9–30.7 dB across those points. Independent 250 kHz source and receiver
+steps moved the observed tone by approximately +250 and -250 kHz; halving
+source amplitude reduced its level by 5.47 dB. Changing the source's LO/DSP
+split retained the wanted tone. All 37 finite source bursts completed with
+acknowledgments and no reported source errors; no captured samples clipped.
+The JSON includes the measured IFs and conversion fits. Delivered RF power
+and antenna sensitivity were not calibrated.
+
 ## Licenses of the binary's contents
 
 * eSpDR firmware and this patch: 0BSD (`LICENSE-eSpDR-0BSD`).
