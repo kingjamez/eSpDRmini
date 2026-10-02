@@ -864,8 +864,13 @@ def main():
         n = i1 - i0 + 1
         settings_new, when_new = dvr["meta"][dvr_slot(i0)]
         when_old = dvr["meta"][dvr_slot(i1)][1]
-        plan = dsp.box_plan(settings_new["rate"], f0, f1)
-        per = (dvr["raw"].shape[1] - plan["taps"] + 1) // plan["decim"]
+        try:
+            plan = dsp.box_plan(settings_new["rate"], f0, f1, dvr["raw"].shape[1])
+        except ValueError:
+            box_text.set_text(f"{f0:.3f} – {f1:.3f} MHz\nSelection too narrow for this snapshot.\n"
+                              "Widen the band or capture a longer snapshot.")
+            return
+        per = plan["samples_out"]
         secs = (when_new - when_old).total_seconds()
         box_text.set_text(f"{f0:.3f} – {f1:.3f} MHz\n"
                           f"{f1 - f0:.3f} MHz wide · {n} snapshot{'s' if n > 1 else ''}\n"
@@ -888,7 +893,12 @@ def main():
             return
         f0, f1, i0, i1 = state["box"]
         chosen = [(dvr_iq(i),) + tuple(dvr["meta"][dvr_slot(i)]) for i in range(i1, i0 - 1, -1)]  # oldest first
-        out, plan, total = dsp.save_box(CAPTURE_DIR, chosen, f0, f1, mac, per_snapshot=box_seg.index == 1, hw=radio.hw)
+        try:
+            out, plan, total = dsp.save_box(CAPTURE_DIR, chosen, f0, f1, mac, per_snapshot=box_seg.index == 1, hw=radio.hw)
+        except ValueError as e:
+            toast(str(e), ORANGE, 8)
+            repaint()
+            return
         state["saved"]["box"] += 1
         state["last_file"] = os.path.basename(out)
         toast(f"Saved captures/{os.path.basename(out)}/  ·  {len(chosen)} snapshots  ·  {total:,} samples at "
