@@ -248,14 +248,17 @@ def _probe_espsdr(port):
 
 
 def _probe_espdr(port):
+    esp = None
     try:
         esp = espctl.Esp(port, timeout=0.5)
-        if esp.command(espctl.CTL_INFO, 0) == espctl.FIRMWARE_ID:
+        if (esp.command(espctl.CTL_INFO, 0) == espctl.FIRMWARE_ID
+                and esp.supports_snapshot()):
             esp.ser.timeout = 5
             return esp
-        esp.close()
     except Exception:
         pass
+    if esp is not None:
+        esp.close()
     return None
 
 
