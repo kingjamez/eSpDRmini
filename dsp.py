@@ -1,7 +1,7 @@
 """Signal processing and SigMF output for eSpDR snapshots.
 
-Snapshots arrive in the ESP's raw orientation, where RF = LO - f. Everything
-written to disk is conjugated first, so files use the usual RF = LO + f.
+Snapshots arrive from radios.py in the usual orientation (RF = LO + f) as
+raw ADC counts; files are written the same way.
 """
 import datetime as dt
 import json
@@ -18,7 +18,7 @@ def spectrum(iq, n, window):
     iq = iq - iq.mean()
     segs = iq[: (len(iq) // n) * n].reshape(-1, n)
     p = np.abs(np.fft.fft(segs * window, axis=1)) ** 2 / (FULL_SCALE * window.sum()) ** 2
-    p = np.fft.fftshift(p, axes=1)[:, ::-1]  # ESP convention: RF = LO - f
+    p = np.fft.fftshift(p, axes=1)
     return 10 * np.log10(p.mean(0) + 1e-20), 10 * np.log10(p.max(0) + 1e-20)
 
 
@@ -48,7 +48,7 @@ def extract(iq_raw, lo_hz, rate, f_lo_mhz, f_hi_mhz):
     snapshot. Returns complex64 in the usual orientation; the filter's edge
     transient is dropped, so the result is slightly shorter than len/decim."""
     plan = box_plan(rate, f_lo_mhz, f_hi_mhz)
-    x = np.conj(iq_raw.astype(np.complex64))
+    x = iq_raw.astype(np.complex64)
     x = x - x.mean()
     centre = (f_lo_mhz + f_hi_mhz) / 2 * 1e6
     t = np.arange(len(x)) / rate
@@ -62,17 +62,19 @@ def _stamp(when):
     return when.strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
 
 
-def _base_meta(datatype, rate, description, settings, mac):
+DEFAULT_HW = "ESP32 internal Wi-Fi receiver"
+
+
+def _base_meta(datatype, rate, description, settings, mac, hw=DEFAULT_HW):
     meta = {
         "core:datatype": datatype,
         "core:sample_rate": rate,
         "core:version": "1.0.0",
-        "core:hw": "ESP32-S3 internal Wi-Fi/BT receiver, eSpDR snapshot firmware",
-        "core:recorder": "eSpDR snapshot viewer",
+        "core:hw": hw,
+        "core:recorder": "eSpDRmini",
         "core:description": description,
-        "espdr:gain_selector": settings["gain"],
-        "espdr:rf_gain": settings["rf_gain"],
-        "espdr:bb_gain": settings["bb_gain"],
+        "espdr:gain": "hardware AGC" if settings.get("agc") else settings["gain"],
+        "espdr:gain_detail": settings.get("gain_detail", ""),
     }
     if mac:
         meta["espdr:mac"] = mac
@@ -85,19 +87,19 @@ def _write(base, data, meta):
         json.dump(meta, f, indent=2)
 
 
-def save_snapshot(directory, iq_raw, settings, when, mac=None, annotations=(), tag=""):
+def save_snapshot(directory, iq_raw, settings, when, mac=None, annotations=(), tag="", hw=DEFAULT_HW):
     """Writes one raw snapshot as SigMF ci16_le. Returns the path without extension."""
     os.makedirs(directory, exist_ok=True)
     lo_mhz, rate = settings["lo_hz"] / 1e6, settings["rate"]
-    base = os.path.join(directory, f"esp32s3_{tag}{lo_mhz:.3f}MHz_{rate / 1e6:.0f}Msps_"
+    base = os.path.join(directory, f"iq_{tag}{lo_mhz:.3f}MHz_{rate / 1e6:.0f}Msps_"
                                    f"{when.strftime('%Y%m%dT%H%M%S_%f')[:-3]}Z")
-    iq = np.conj(iq_raw)
+    iq = iq_raw
     data = np.stack([iq.real, iq.imag], 1).astype("<i2")
     meta = {
         "global": _base_meta("ci16_le", rate,
                              f"{len(iq)} contiguous IQ pairs ({len(iq) / rate * 1e6:.0f} us). Raw signed "
-                             "10-bit ADC counts (-512..511); Q is negated so that RF = LO + f.",
-                             settings, mac),
+                             "10-bit ADC counts (-512..511), oriented so that RF = LO + f.",
+                             settings, mac, hw),
         "captures": [{"core:sample_start": 0, "core:frequency": settings["lo_hz"],
                       "core:datetime": _stamp(when)}],
         "annotations": list(annotations),
@@ -106,7 +108,7 @@ def save_snapshot(directory, iq_raw, settings, when, mac=None, annotations=(), t
     return base
 
 
-def save_box(directory, rows, f_lo_mhz, f_hi_mhz, mac=None, per_snapshot=False):
+def save_box(directory, rows, f_lo_mhz, f_hi_mhz, mac=None, per_snapshot=False, hw=DEFAULT_HW):
     """Extracts a waterfall box. rows: (iq_raw, settings, when) in time order.
 
     Writes one cf32_le SigMF recording whose capture segments are the
@@ -128,7 +130,7 @@ def save_box(directory, rows, f_lo_mhz, f_hi_mhz, mac=None, per_snapshot=False):
         if per_snapshot:
             meta = {
                 "global": _base_meta("cf32_le", plan["rate_out"], _box_text(f_lo_mhz, f_hi_mhz, plan, settings),
-                                     settings, mac),
+                                     settings, mac, hw),
                 "captures": [{"core:sample_start": 0, "core:frequency": centre_hz,
                               "core:datetime": _stamp(when)}],
                 "annotations": [],
@@ -149,7 +151,7 @@ def save_box(directory, rows, f_lo_mhz, f_hi_mhz, mac=None, per_snapshot=False):
                                  _box_text(f_lo_mhz, f_hi_mhz, plan, settings) +
                                  f" {len(rows)} snapshots as capture segments; each segment is contiguous, "
                                  "but there are gaps between segments (see core:datetime).",
-                                 settings, mac),
+                                 settings, mac, hw),
             "captures": captures,
             "annotations": annotations,
         }
@@ -160,7 +162,7 @@ def save_box(directory, rows, f_lo_mhz, f_hi_mhz, mac=None, per_snapshot=False):
 def _box_text(f_lo, f_hi, plan, settings):
     return (f"Waterfall box {f_lo:.3f}-{f_hi:.3f} MHz, shifted to 0 Hz, low-pass filtered to "
             f"{plan['bw'] / 1e6:.3f} MHz and decimated by {plan['decim']} from "
-            f"{settings['rate'] / 1e6:.0f} Msps. Complex float, full scale = 1.0.")
+            f"{settings['rate'] / 1e6:g} Msps. Complex float, full scale = 1.0.")
 
 
 def now_utc():

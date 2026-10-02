@@ -83,10 +83,12 @@ Developed on an **ESP32-S3 Super Mini**, a widely available board about
 
 **Any ESP32-S3 board should work** if its native USB port is wired to the
 connector. Look for a port that appears with USB vendor ID `303a`; boards that
-only have a USB-to-UART bridge (CP210x or CH340) won't work. Other ESP32
-variants (ESP32, S2, C3, C6 and so on) won't work either; the firmware
-depends on S3-specific hardware. The antenna matters: a board with a u.FL
-connector and a proper 2.4 GHz antenna will hear more than a chip antenna.
+only have a USB-to-UART bridge (CP210x or CH340) won't work with the eSpDR
+firmware. Other ESP32 chips (ESP32, S2, C3, C5, C6, C61) can't run the eSpDR
+firmware, which depends on S3-specific hardware, but the viewer supports them
+through **esp-sdr**: see [Other ESP32 chips](#other-esp32-chips-esp-sdr)
+below. The antenna matters: a board with a u.FL connector and a proper
+2.4 GHz antenna will hear more than a chip antenna.
 
 Use a USB **data** cable. Charge-only cables are the most common reason the
 board doesn't appear.
@@ -104,12 +106,14 @@ board doesn't appear.
     .venv/bin/python espdrmini.py                  # Windows: .venv\Scripts\python
 
 The viewer finds the board, loads the firmware into its RAM (about a second)
-and starts showing the band around 2440 MHz.
+and starts showing the band around 2440 MHz. If the board is already running
+[esp-sdr](#other-esp32-chips-esp-sdr), it uses that instead.
 
 * **Nothing is written to flash.** The firmware runs from RAM. Unplug the board
   and it goes back to whatever it ran before.
-* Options: `--lo 2412` (MHz), `--gain 50`, `--rate 16` (Msps), `--port PORT`,
-  `--rows 400` (DVR depth), `--show-mac` (see Privacy below).
+* Options: `--lo 2412` (MHz), `--gain 50`, `--rate 16` (MS/s), `--port PORT`,
+  `--backend auto|espdr|esp-sdr`, `--rows 400` (DVR depth), `--show-mac` (see
+  Privacy below).
 * **Linux:** if the port isn't accessible, add yourself to the `dialout` (or
   `uucp`) group and log in again.
 * **Board not found:** try another cable; or hold **B**/BOOT while plugging
@@ -118,6 +122,54 @@ and starts showing the band around 2440 MHz.
 Tested on macOS (Apple silicon) with Python 3.14. The serial port lookup and
 loader are written for Linux and Windows too, but haven't been tested there
 yet; reports are welcome.
+
+## Other ESP32 chips: esp-sdr
+
+[**esp-sdr**](https://github.com/ESPARGOS/esp-sdr) by Florian Euchner
+([ESPARGOS](https://espargos.net/espsdr/)) and Zoltan Doczi independently
+found the same kind of raw-IQ debug path across the ESP32 family and built
+firmware for **ESP32, C3, C5, C6, C61, S2, S3 and S31**. It even adds
+**5 GHz reception on the ESP32-C5**. Its S3 support builds on eSpDR's
+bank-rotation scheme. It's an impressive cross-chip effort, and esp-sdr's own
+browser viewer is well worth trying too.
+
+eSpDRmini's viewer can drive a board running esp-sdr, so the same markers,
+trigger, DVR and SigMF recording work on all of those chips:
+
+1. Flash esp-sdr onto the board, with their
+   [browser installer](https://espargos.net/espsdr/app/flash.html) or by
+   building it from source (their README lists the pinned ESP-IDF version).
+   Unlike eSpDR's RAM loading, this replaces what's in flash; consider
+   backing it up first with
+   `python -m esptool read-flash 0 ALL backup.bin`.
+2. Run the viewer as usual. With `--backend auto` (the default) it uses
+   esp-sdr when the board is running it, and otherwise loads eSpDR into RAM
+   (ESP32-S3 only). `--backend esp-sdr` or `--backend espdr` forces one.
+
+What changes with esp-sdr:
+
+| | eSpDR (S3, RAM) | esp-sdr (flashed) |
+|---|---|---|
+| Chips | ESP32-S3 | ESP32, C3, C5, C6, C61, S2, S3, S31 |
+| Bands | 2.2–2.8 GHz | 2.4 GHz; C5 also 5 GHz |
+| Sample rates | 80, 16 MS/s | per chip, e.g. S3 80/40/16, C5 80–4, C6 80 |
+| Samples per snapshot | 15,360 to 61,440 contiguous | 16,380 |
+| Tuning steps | 457.76 Hz | 1 MHz |
+| Gain | gain-table index | gain-table index or hardware AGC (default) |
+
+The viewer selects esp-sdr's widest baseband filter (`BANDWIDTH 0`) so that
+signals fill the whole sampled span. It speaks esp-sdr's documented text
+protocol (`INFO`, `CAPS`, `LIMITS?`, `RANGE?`, `FREQ`, `GAIN`, `BANDWIDTH`,
+`CAP20`) from [`radios.py`](radios.py); no esp-sdr code is included in this
+repository, and esp-sdr itself is licensed GPL-3.0.
+
+**Spectrum orientation per chip.** Each chip's raw I/Q may present the
+spectrum mirrored. On the ESP32-S3, both eSpDR and esp-sdr are mirrored, and
+the viewer corrects it; this was verified with a steady 2448 MHz carrier
+that the boards pick up. Other chips haven't been checked yet: run
+`python tools/orientation.py` on a new chip. It reports "orientation OK" or
+"MIRRORED", and a mirrored chip only needs its entry in `ESPSDR_MIRRORED` in
+`radios.py` changed.
 
 ## Using the viewer
 
@@ -306,10 +358,12 @@ outside the span can alias into it; see eSpDR's
 |---|---|
 | `espdrmini.py` | the viewer (GUI) |
 | `dsp.py` | spectra, DVR box extraction, SigMF writing |
-| `espctl.py` | control protocol, firmware loader, command-line tool |
+| `radios.py` | receiver backends: eSpDR (RAM-loaded, S3) and esp-sdr (flashed, any supported ESP32); `python radios.py` identifies a board |
+| `espctl.py` | eSpDR control protocol, firmware loader, command-line tool |
 | `firmware/espdr-snapshot.bin` | the firmware image the viewer loads |
 | `firmware/espdr-snapshot.patch` | the change to eSpDR, with [rebuild steps](firmware/README.md) |
 | `tools/gain_sweep.py` | plots the spectrum at several gain settings ([example](docs/gain_sweep_2440MHz.png)) |
+| `tools/orientation.py` | checks a backend's spectrum orientation against the 2448 MHz carrier |
 
 To rebuild the firmware you need eSpDR's source and ESP-IDF v5.5.3 or later;
 [firmware/README.md](firmware/README.md) has the steps.
@@ -327,6 +381,9 @@ To rebuild the firmware you need eSpDR's source and ESP-IDF v5.5.3 or later;
 * **[eSpDR](https://github.com/h0m3us3r/eSpDR)** by h0m3us3r: the radio
   discovery, the firmware this is built on, the control protocol, and the
   documentation that made all of this approachable. Thank you.
+* **[esp-sdr](https://github.com/ESPARGOS/esp-sdr)** by Florian Euchner
+  (ESPARGOS) and Zoltan Doczi: firmware for the rest of the ESP32 family,
+  which the viewer drives over its documented protocol.
 * The viewer's look is inspired by [TMOG](https://tmog.org).
 * eSpDRmini is released under the [Zero-Clause BSD license](LICENSE), the
   same license as eSpDR.

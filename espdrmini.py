@@ -1,7 +1,9 @@
 """eSpDRmini: live spectrum and waterfall from eSpDR snapshots on an ESP32-S3 (no FPGA).
 
-Each snapshot is 1 to 4 capture banks of 15,360 contiguous IQ pairs (192 us
-to 768 us at 80 Msps, 0.96 to 3.84 ms at 16 Msps); 20 to 5 arrive per second. The display is a series of short looks
+Works with two kinds of firmware (radios.py): eSpDR's snapshot mode on the
+ESP32-S3, loaded into RAM automatically (1 to 4 capture banks of 15,360
+contiguous IQ pairs per snapshot), or ESPARGOS esp-sdr flashed on any
+supported ESP32 (16,380 pairs per snapshot, 2.4 GHz and on the C5 5 GHz). The display is a series of short looks
 at the band, not a continuous stream, so brief bursts can fall between them.
 
 Features: markers with delta (SNR), Wi-Fi/BLE channel overlays, a burst
@@ -25,11 +27,11 @@ import numpy as np
 
 import dsp
 import espctl
+import radios
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 CAPTURE_DIR = os.path.join(HERE, "captures")
 PREFS = os.path.join(HERE, ".viewer_prefs.json")  # display choices kept between runs
-LO_MIN, LO_MAX = 2220.0, 2790.0  # PLL lock range measured on the reference board
 FFT_SIZES = (1024, 2048, 4096, 8192)
 DEFAULTS = {"meter": True, "overlay": 0, "fft": 2048, "avg": 0.7, "floor": -85.0, "ceiling": -15.0,
             "wf": 0, "trig_thr": -40.0, "trig_hold": 0.5, "trig_max": 50, "page": 0, "box_mode": 0,
@@ -47,45 +49,43 @@ MONO = ["Menlo", "DejaVu Sans Mono", "monospace"]
 
 
 class Receiver(threading.Thread):
-    """Owns the serial port: applies queued settings and captures snapshots."""
+    """Owns the radio: applies queued settings and captures snapshots."""
 
-    def __init__(self, esp, frames):
+    ORDER = ("rate", "agc", "gain", "lo")
+
+    def __init__(self, radio, frames):
         super().__init__(daemon=True)
-        self.esp, self.frames = esp, frames
+        self.radio, self.frames = radio, frames
         self.requests = queue.Queue()
         self.running = True
         self.paused = False
-        self.banks = 1  # capture banks per snapshot, 15,360 pairs each
+        self.banks = 1  # snapshot length in capture banks (eSpDR)
         self.error = None
-        self.settings = self._read_settings()
+        self.settings = radio.settings()
 
-    def _read_settings(self):
-        s = self.esp.settings()
-        return {"lo_hz": s["lo_hz"], "rate": espctl.RATE_SPS[s["rate"]], "gain": s["gain"],
-                "rf_gain": s["rf_gain"], "bb_gain": s["bb_gain"]}
-
-    def set(self, op, value):
-        self.requests.put((op, value))
+    def set(self, what, value):
+        self.requests.put((what, value))
 
     def run(self):
-        order = (espctl.ESP_SET_RATE, espctl.ESP_SET_GAIN, espctl.ESP_SET_LO)
+        apply = {"rate": self.radio.set_rate, "agc": self.radio.set_agc, "gain": self.radio.set_gain,
+                 "lo": self.radio.set_lo}
         while self.running:
             try:
                 pending = {}
                 while not self.requests.empty():  # a dragged slider sends many; keep the last
-                    op, value = self.requests.get()
-                    pending[op] = value
-                for op in sorted(pending, key=order.index):
+                    what, value = self.requests.get()
+                    pending[what] = value
+                for what in sorted(pending, key=self.ORDER.index):
                     try:
-                        self.esp.command(op, pending[op])
-                    except espctl.ControlError as e:
+                        apply[what](pending[what])
+                    except Exception as e:
                         self.error = f"setting refused: {e}"
                 if pending:
-                    self.settings = self._read_settings()
+                    self.settings = self.radio.settings()
                 if self.paused:  # settings still apply; capture resumes on play
                     time.sleep(0.02)
                     continue
-                iq = self.esp.snapshot(self.banks)
+                iq = self.radio.snapshot(self.banks)
                 frame = (iq, dict(self.settings), dsp.now_utc())
                 try:
                     self.frames.put_nowait(frame)
@@ -96,32 +96,14 @@ class Receiver(threading.Thread):
                 time.sleep(0.5)
 
 
-def connect(port, reload):
-    running = False
-    if not reload:
-        try:
-            probe = espctl.Esp(port, timeout=0.5)
-            running = probe.command(espctl.CTL_INFO, 0) == espctl.FIRMWARE_ID
-            probe.close()
-        except Exception:
-            pass
-    if not running:
-        print("loading snapshot firmware into RAM...")
-        espctl.load_ram(port)
-    esp = espctl.Esp(port)
-    mac = (esp.command(espctl.CTL_INFO, 1).to_bytes(4, "little")
-           + esp.command(espctl.CTL_INFO, 2).to_bytes(2, "little"))
-    return esp, {"firmware": esp.command(espctl.CTL_INFO, 0), "mac": mac.hex(":")}
-
-
 def duration(seconds):
     return f"{seconds * 1e6:.0f} µs" if seconds < 1e-3 else f"{seconds * 1e3:.2f} ms"
 
 
-def load_prefs():
+def load_prefs(path):
     prefs = dict(DEFAULTS)
     try:
-        with open(PREFS) as f:
+        with open(path) as f:
             prefs.update({k: v for k, v in json.load(f).items() if k in DEFAULTS})
     except (OSError, ValueError):
         pass
@@ -131,13 +113,16 @@ def load_prefs():
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--port", help="serial port (default: first Espressif USB device)")
-    ap.add_argument("--lo", type=float, default=2440.0, help=f"LO, MHz ({LO_MIN:.0f}-{LO_MAX:.0f})")
-    ap.add_argument("--gain", type=int, default=45, help="gain selector 0-127 (about 1 dB/step from 35 to 76)")
-    ap.add_argument("--rate", type=int, choices=(80, 16), default=80, help="Msps")
+    ap.add_argument("--backend", choices=("auto", "espdr", "esp-sdr"), default="auto",
+                    help="auto: use esp-sdr if the board runs it, else load eSpDR into RAM (S3)")
+    ap.add_argument("--lo", type=float, default=2440.0, help="LO, MHz")
+    ap.add_argument("--gain", type=int, help="manual gain index (eSpDR default 45; esp-sdr default: AGC)")
+    ap.add_argument("--rate", type=float, default=80, help="MS/s (80 or 16 on eSpDR; esp-sdr per chip)")
     ap.add_argument("--rows", type=int, default=400, help="waterfall / DVR history, snapshots")
     ap.add_argument("--show-mac", action="store_true",
                     help="show the board's MAC address and record it in SigMF metadata")
     ap.add_argument("--reload", action="store_true", help="reload the firmware even if it is running")
+    ap.add_argument("--prefs", default=PREFS, help="display preferences file")
     ap.add_argument("--screenshot", help="render a few seconds headless, save to this PNG and exit")
     args = ap.parse_args()
 
@@ -163,22 +148,26 @@ def main():
     })
 
     port = args.port or espctl.find_port()
-    esp, info = connect(port, args.reload)
-    mac = info["mac"] if args.show_mac else None
-    esp.command(espctl.ESP_SET_RATE, 0 if args.rate == 80 else 1)
+    radio = radios.open_radio(port, args.backend, args.reload)
+    mac = radio.mac if args.show_mac else None
+    LO_MIN, LO_MAX = radio.ui_range_mhz
+    rate0 = args.rate * 1e6 if args.rate * 1e6 in radio.rates else radio.rates[0]
+    radio.set_rate(rate0)
     lo0 = min(max(args.lo, LO_MIN), LO_MAX)
-    esp.command(espctl.ESP_SET_LO, int(round(lo0 * 1e6)))
-    esp.command(espctl.ESP_SET_GAIN, args.gain)
+    radio.set_lo(lo0 * 1e6)
+    if args.gain is not None or not radio.has_agc:
+        radio.set_gain(args.gain if args.gain is not None else 45)
+    gain0 = args.gain if args.gain is not None else 45
 
     frames = queue.Queue(maxsize=4)
-    rx = Receiver(esp, frames)
+    rx = Receiver(radio, frames)
     rx.start()
 
-    prefs = load_prefs()
+    prefs = load_prefs(args.prefs)
 
     def save_prefs():
         try:
-            with open(PREFS, "w") as f:
+            with open(args.prefs, "w") as f:
                 json.dump(prefs, f)
         except OSError:
             pass
@@ -339,14 +328,19 @@ def main():
                     for i, s in enumerate(steps)]
     label(sx, 0.587, "step MHz", 6.5, MUTED2)
     label(sx, 0.555, "Gain selector", 8)
-    gain_slider = slider([sx, 0.525, sw - 0.03, 0.022], 0, 82, args.gain, 1, GREEN, "%d")
+    gain_slider = slider([sx, 0.525, sw - 0.03, 0.022], 0, radio.gain_max, min(gain0, radio.gain_max), 1,
+                         GREEN, "%d")
+    agc_check = checkbox([sx + sw - 0.062, 0.548, 0.062, 0.024], "AGC", radio.has_agc and args.gain is None) \
+        if radio.has_agc else None
     label(sx, 0.507, "40–55 indoors  ·  70+ clips", 6.5, MUTED2)
     label(sx, 0.475, "Sample rate", 8)
-    Segmented([sx, 0.437, sw, 0.032], ("80 Msps", "16 Msps"), 0 if args.rate == 80 else 1,
-              lambda i: (rx.set(espctl.ESP_SET_RATE, i), state.update(hold=None), length_labels(i)))
+    label(sx + 0.075, 0.475, "MS/s", 7, MUTED2)
+    Segmented([sx, 0.437, sw, 0.032], tuple(f"{r / 1e6:g}" for r in radio.rates), radio.rates.index(rate0),
+              lambda i: (rx.set("rate", radio.rates[i]), state.update(hold=None), length_labels(radio.rates[i])),
+              size=8 if len(radio.rates) > 3 else 8.5)
     length_label = label(sx, 0.405, "Snapshot length", 8)
-    length_seg = Segmented([sx, 0.368, sw, 0.031], ("1", "2", "3", "4"), prefs["banks"] - 1,
-                           lambda i: set_banks(i + 1), size=8)
+    length_seg = Segmented([sx, 0.368, sw, 0.031], tuple(str(k + 1) for k in range(radio.max_banks)),
+                           min(prefs["banks"], radio.max_banks) - 1, lambda i: set_banks(i + 1), size=8)
     caps(sx, 0.335, "band guide")
     guide = [("Wi-Fi ch 1 / 6 / 11", "2412 / 2437 / 2462", GREEN),
              ("BLE advertising", "2402 / 2426 / 2480", PURPLE),
@@ -450,18 +444,27 @@ def main():
     tune_label = label(MX0, 0.842, "Tuning range", 8, MUTED)
     tune_hint = label(MX1, 0.842, "", 8, MUTED, ha="right", family=MONO)
     tune_ax = fig.add_axes([MX0, 0.808, MW, 0.026], facecolor=PANEL)
-    freq_slider = Slider(tune_ax, "", LO_MIN, LO_MAX, valinit=lo0, valstep=0.5, color=(0, 0, 0, 0),
+    freq_slider = Slider(tune_ax, "", LO_MIN, LO_MAX, valinit=lo0, valstep=max(radio.lo_step_mhz, 0.5),
+                         color=(0, 0, 0, 0),
                          track_color=RAISED, initcolor="none",
                          handle_style={"facecolor": CYAN, "edgecolor": TEXT, "size": 11})
     freq_slider.valtext.set_visible(False)
     tune_ax.axvspan(2400, 2483.5, 0.2, 0.8, color=CYAN, alpha=0.18, lw=0)
     window_span = tune_ax.axvspan(lo0 - 40, lo0 + 40, 0.2, 0.8, color=GREEN, alpha=0.35, lw=0)
     trans = blended_transform_factory(tune_ax.transData, tune_ax.transAxes)
-    for f in (2220, 2300, 2400, 2483.5, 2600, 2700, 2790):
+    span_mhz = LO_MAX - LO_MIN
+    step = next(s for s in (50, 100, 250, 500, 1000) if span_mhz / s <= 8)
+    ticks = [LO_MIN] + [t for t in np.arange(np.ceil(LO_MIN / step) * step, LO_MAX, step)
+                        if min(t - LO_MIN, LO_MAX - t) > span_mhz * 0.06] + [LO_MAX]
+    for f in ticks:
         tune_ax.text(f, -0.35, f"{f:g}", transform=trans, ha="center", va="top", fontsize=7,
                      color=MUTED2, family=MONO)
     tune_ax.text(2441.75, 1.15, "ISM 2.4 GHz", transform=trans, ha="center", va="bottom",
                  fontsize=6.5, color=CYAN, alpha=0.8)
+    if LO_MAX > 5150:
+        tune_ax.axvspan(5150, 5895, 0.2, 0.8, color=CYAN, alpha=0.18, lw=0)
+        tune_ax.text(5522, 1.15, "Wi-Fi 5 GHz", transform=trans, ha="center", va="bottom",
+                     fontsize=6.5, color=CYAN, alpha=0.8)
 
     # ---- main: spectrum --------------------------------------------------------------------
     trace_cmap = LinearSegmentedColormap.from_list("trace", [CYAN, GREEN, LIME, YELLOW, ORANGE])
@@ -516,7 +519,7 @@ def main():
     wf_hint = label(MX1, 0.472, "", 7.5, MUTED2, ha="right")
 
     # ---- main: statistics grid -----------------------------------------------------------------
-    stat_names = ("LO", "Span · RBW", "Gain (rf / bb)", "Snapshot", "Rate", "Clipped", "Saved", "Last saved")
+    stat_names = ("LO", "Span · RBW", "Gain", "Snapshot", "Rate", "Clipped", "Saved", "Last saved")
     stats = {}
     for i, name in enumerate(stat_names):
         col, row = i % 4, i // 4
@@ -567,8 +570,9 @@ def main():
 
     # ---- tuning ----
     def request_lo(mhz, source=None):
-        mhz = round(min(max(mhz, LO_MIN), LO_MAX), 3)
-        rx.set(espctl.ESP_SET_LO, int(round(mhz * 1e6)))
+        mhz = min(max(mhz, LO_MIN), LO_MAX)
+        mhz = round(round(mhz / radio.lo_step_mhz) * radio.lo_step_mhz, 4)
+        rx.set("lo", mhz * 1e6)
         if source is not lo_box:
             quiet(lo_box, f"{mhz:.3f}")
         if source is not freq_slider:
@@ -581,8 +585,8 @@ def main():
         except ValueError:
             pass
 
-    def length_labels(rate_index):
-        unit = 15360 / (80e6 if rate_index == 0 else 16e6)
+    def length_labels(rate):
+        unit = radio.bank_pairs / rate
         for k, b in enumerate(length_seg.buttons):
             d = (k + 1) * unit
             b.label.set_text(f"{d * 1e6:.0f} µs" if d < 1e-3 else f"{d * 1e3:.1f} ms")
@@ -592,7 +596,8 @@ def main():
         prefs["banks"] = n
         save_prefs()
         rx.banks = n
-        length_label.set_text(f"Snapshot length  ·  {n * 15360:,} pairs  ·  ≈ {20 / n:.0f}/s")
+        length_label.set_text(f"Snapshot length  ·  {n * radio.bank_pairs:,} pairs"
+                              + ("" if radio.max_banks > 1 else "  (fixed)"))
         state["hold"] = None
 
     # ---- display ----
@@ -817,7 +822,7 @@ def main():
                 "core:freq_lower_edge": lo * 1e6, "core:freq_upper_edge": hi * 1e6,
                 "core:comment": f"peak {level:.1f} dBFS at {state['f'][k]:.3f} MHz >= "
                                 f"{thr_slider.val:.0f} dBFS"}
-        base = dsp.save_snapshot(os.path.join(CAPTURE_DIR, "triggers"), iq, settings, when, mac, [note], "trig_")
+        base = dsp.save_snapshot(os.path.join(CAPTURE_DIR, "triggers"), iq, settings, when, mac, [note], "trig_", hw=radio.hw)
         state["trig_saved"] += 1
         state["saved"]["trigger"] += 1
         state["last_file"] = os.path.basename(base)
@@ -883,7 +888,7 @@ def main():
             return
         f0, f1, i0, i1 = state["box"]
         chosen = [(dvr_iq(i),) + tuple(dvr["meta"][dvr_slot(i)]) for i in range(i1, i0 - 1, -1)]  # oldest first
-        out, plan, total = dsp.save_box(CAPTURE_DIR, chosen, f0, f1, mac, per_snapshot=box_seg.index == 1)
+        out, plan, total = dsp.save_box(CAPTURE_DIR, chosen, f0, f1, mac, per_snapshot=box_seg.index == 1, hw=radio.hw)
         state["saved"]["box"] += 1
         state["last_file"] = os.path.basename(out)
         toast(f"Saved captures/{os.path.basename(out)}/  ·  {len(chosen)} snapshots  ·  {total:,} samples at "
@@ -897,7 +902,7 @@ def main():
             toast("no snapshot yet", ORANGE)
             return
         iq, settings, when = state["last"]
-        base = dsp.save_snapshot(CAPTURE_DIR, iq, settings, when, mac)
+        base = dsp.save_snapshot(CAPTURE_DIR, iq, settings, when, mac, hw=radio.hw)
         state["saved"]["manual"] += 1
         state["last_file"] = os.path.basename(base)
         kb = os.path.getsize(base + ".sigmf-data") / 1024
@@ -967,7 +972,23 @@ def main():
 
     lo_box.on_submit(on_lo)
     freq_slider.on_changed(lambda v: request_lo(v, freq_slider))
-    gain_slider.on_changed(lambda v: (rx.set(espctl.ESP_SET_GAIN, int(v)), state.update(hold=None)))
+    def on_gain(v):
+        if agc_check is not None and agc_check.get_status()[0]:
+            agc_check.set_active(0)  # moving the slider means manual gain (on_agc sends it)
+        else:
+            rx.set("gain", int(v))
+        state["hold"] = None
+
+    def on_agc(_label=None):
+        if agc_check.get_status()[0]:
+            rx.set("agc", True)
+        else:
+            rx.set("gain", int(gain_slider.val))
+        state["hold"] = None
+
+    gain_slider.on_changed(on_gain)
+    if agc_check is not None:
+        agc_check.on_clicked(on_agc)
     for b, step in step_buttons:
         b.on_clicked(lambda _e, s=step: request_lo(freq_slider.val + s))
     for i, b in enumerate(nav):
@@ -1078,7 +1099,7 @@ def main():
         rate_now = (len(t) - 1) / (t[-1] - t[0]) if len(t) > 1 and t[-1] > t[0] else 0.0
         stats["LO"].set_text(f"{lo:.4f} MHz")
         stats["Span · RBW"].set_text(f"{rate / 1e6:.0f} MHz · {rate / state['n'] / 1e3:.1f} kHz")
-        stats["Gain (rf / bb)"].set_text(f"{settings['gain']}  ({settings['rf_gain']} / {settings['bb_gain']})")
+        stats["Gain"].set_text(f"{'AGC' if settings['agc'] else settings['gain']}  ({settings['gain_detail']})")
         stats["Snapshot"].set_text(f"{len(iq):,} pairs · {duration(len(iq) / rate)}")
         stats["Rate"].set_text("paused" if rx.paused else f"{rate_now:.1f} snapshots/s")
         stats["Clipped"].set_text(f"{clip:.2f} %")
@@ -1104,8 +1125,8 @@ def main():
                                    "drag a box on the waterfall to save part of it  ·  space resumes")
         else:
             color = ORANGE if armed else GREEN
-            text = (f"Radio healthy  ·  eSpDR firmware 0x{info['firmware']:08X}  ·  {port}"
-                    + (f"  ·  MAC {info['mac']}" if args.show_mac else "")
+            text = (f"Radio healthy  ·  {radio.chip}  ·  {radio.firmware}  ·  {port}"
+                    + (f"  ·  MAC {radio.mac}" if args.show_mac else "")
                     + f"  ·  snapshot {state['count']}"
                     + (f"  ·  trigger armed ≥ {thr_slider.val:.0f} dBFS" if armed else ""))
         dot.set_facecolor(color)
@@ -1117,7 +1138,7 @@ def main():
     # ---- start --------------------------------------------------------------------------------
     set_range()
     set_banks(prefs["banks"])
-    length_labels(0 if args.rate == 80 else 1)
+    length_labels(rate0)
     set_overlay(prefs["overlay"])
     layout_meter()
     describe_box()
@@ -1148,6 +1169,7 @@ def main():
     timer.start()
     plt.show()
     rx.running = False
+    radio.close()
 
 
 if __name__ == "__main__":

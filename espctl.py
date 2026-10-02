@@ -72,6 +72,20 @@ def load_ram(port, image=DEFAULT_IMAGE):
     raise SystemExit(f"{port} did not come back after loading")
 
 
+def unpack20(payload):
+    """Signed 10-bit I/Q packed two pairs per 5 bytes (40 bits, little-endian:
+    I0 | Q0 << 10 | I1 << 20 | Q1 << 30) to complex64, in raw orientation."""
+    import numpy as np
+    raw = np.frombuffer(payload, np.uint8)
+    if len(raw) % 5:
+        raw = np.concatenate([raw, np.zeros(5 - len(raw) % 5, np.uint8)])
+    raw = raw.reshape(-1, 5).astype(np.uint64)
+    bits = raw[:, 0] | raw[:, 1] << 8 | raw[:, 2] << 16 | raw[:, 3] << 24 | raw[:, 4] << 32
+    fields = np.stack([(bits >> s) & 0x3FF for s in (0, 10, 20, 30)], axis=1).astype(np.int32)
+    fields = np.where(fields >= 512, fields - 1024, fields).reshape(-1, 2)
+    return (fields[:, 0] + 1j * fields[:, 1]).astype(np.complex64)
+
+
 class Esp:
     def __init__(self, port=None, timeout=5.0):
         self.port = port or find_port()
@@ -140,12 +154,7 @@ class Esp:
         crc = struct.unpack("<I", self._read_exact(4))[0]
         if crc != zlib.crc32(header + payload):
             raise ControlError("snapshot CRC mismatch")
-        # Two pairs per 5 bytes: 40 bits = I0 | Q0 << 10 | I1 << 20 | Q1 << 30.
-        raw = np.frombuffer(payload, np.uint8).reshape(-1, 5).astype(np.uint64)
-        bits = raw[:, 0] | raw[:, 1] << 8 | raw[:, 2] << 16 | raw[:, 3] << 24 | raw[:, 4] << 32
-        fields = np.stack([(bits >> s) & 0x3FF for s in (0, 10, 20, 30)], axis=1).astype(np.int32)
-        fields = np.where(fields >= 512, fields - 1024, fields).reshape(-1, 2)
-        return (fields[:, 0] + 1j * fields[:, 1]).astype(np.complex64)
+        return unpack20(payload)
 
 
 def main():
@@ -168,7 +177,11 @@ def main():
         load_ram(port, args.image)
         print("loaded")
     esp = Esp(port)
-    fw = esp.command(CTL_INFO, 0)
+    try:
+        fw = esp.command(CTL_INFO, 0)
+    except ControlError:
+        raise SystemExit("The board isn't running the eSpDR snapshot firmware. Run `python espctl.py load` "
+                         "first (ESP32-S3), or use `python radios.py` for a board running esp-sdr.")
     line = f"firmware id 0x{fw:08X} ({'eSpDR' if fw == FIRMWARE_ID else 'unknown'})"
     if args.show_mac:
         mac = esp.command(CTL_INFO, 1).to_bytes(4, "little") + esp.command(CTL_INFO, 2).to_bytes(2, "little")
