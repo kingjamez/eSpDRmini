@@ -170,6 +170,7 @@ spectrum mirrored, and the viewer corrects for it per chip. Verified so far:
 |---|---|---|---|
 | ESP32-S3 | eSpDR and esp-sdr | 2448 MHz carrier at several LOs | mirrored, corrected |
 | ESP32-C5 (rev 1.0) | esp-sdr | 48 MHz harmonics: 2400, 2448, 2496 MHz and 5184, 5232, 5280, 5328, 5760 MHz | mirrored on both bands, corrected |
+| ESP32-C6 (C6FH4 rev 0.2) | esp-sdr | 48 MHz harmonics: 2400, 2448, 2496 MHz | mirrored, corrected |
 
 The reference lines are harmonics of 48 MHz (2448 MHz is 51 × 48 MHz), which
 boards pick up from their surroundings; they stay at the same RF frequency

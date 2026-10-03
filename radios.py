@@ -31,7 +31,8 @@ ESPSDR_RATE_CODES = {80e6: 0, 40e6: 1, 20e6: 2, 10e6: 3, 8e6: 4, 4e6: 5, 16e6: 6
 # RF = LO + f arrives at -f. Measured against known Wi-Fi channels; chips not
 # listed are assumed to match the S3 until checked (see tools/orientation.py).
 ESPSDR_MIRRORED = {"S3SDR": True,   # eSpDR and esp-sdr alike
-                   "C5SDR": True}   # both the 2.4 and 5 GHz paths (48 MHz harmonics)
+                   "C5SDR": True,   # both the 2.4 and 5 GHz paths (48 MHz harmonics)
+                   "C6SDR": True}   # 48 MHz harmonics at 2400 and 2496 MHz
 
 # Slider range shown for each chip family (MHz). esp-sdr accepts 100-6000 MHz
 # tuning attempts, but PLL lock outside these bands has not been verified.
