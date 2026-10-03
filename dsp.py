@@ -78,6 +78,9 @@ def _base_meta(datatype, rate, description, settings, mac, hw=DEFAULT_HW):
     }
     if mac:
         meta["espdr:mac"] = mac
+    if "lo_mode" in settings:
+        meta.update({"espdr:lo_mode": settings["lo_mode"], "espdr:pll_hz": settings["pll_hz"],
+                     "espdr:sdm_word": settings["sdm_word"]})
     return meta
 
 

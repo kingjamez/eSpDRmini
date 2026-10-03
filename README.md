@@ -1,6 +1,6 @@
 # eSpDRmini
 
-**An 80 MHz-wide spectrum analyser and IQ recorder for 2.2–2.8 GHz, built
+**An 80 MHz-wide spectrum analyser and IQ recorder with roughly 1.84–2.79 GHz tuning, built
 from a thumbnail-sized ESP32-S3 board and a USB cable.**
 
 ![The eSpDRmini viewer: markers measure a Wi-Fi channel's SNR, with the Wi-Fi channel overlay on](docs/screenshot.png)
@@ -9,7 +9,7 @@ eSpDRmini is a small companion to [**eSpDR**](https://github.com/h0m3us3r/eSpDR)
 by [h0m3us3r](https://github.com/h0m3us3r). Everything that makes it possible,
 from getting raw IQ out of the ESP32-S3's radio to tuning its PLL and setting
 its gain, filters and calibration, comes from eSpDR. This project adds a
-"snapshot" mode to eSpDR's firmware, so you can explore the 2.4 GHz band with
+"snapshot" mode to eSpDR's firmware, so you can explore that range with
 nothing but the ESP32-S3 itself, plus a desktop viewer for doing it.
 
 ---
@@ -151,10 +151,10 @@ What changes with esp-sdr:
 | | eSpDR (S3, RAM) | esp-sdr (flashed) |
 |---|---|---|
 | Chips | ESP32-S3 | ESP32, C3, C5, C6, C61, S2, S3, S31 |
-| Bands | 2.2–2.8 GHz | 2.4 GHz; C5 also 5 GHz |
+| Bands | approx. 1.84–2.79 GHz, board-dependent PLL lock | 2.4 GHz; C5 also 5 GHz |
 | Sample rates | 80, 16 MS/s | per chip, e.g. S3 80/40/16, C5 80–4, C6 80 |
 | Samples per snapshot | 15,360 to 61,440 contiguous | 16,380 |
-| Tuning steps | 457.76 Hz | 1 MHz |
+| Tuning steps | 457.76 Hz normal; 381.47 Hz in 5/6 mode | 1 MHz |
 | Gain | gain-table index | gain-table index or hardware AGC (default) |
 
 The viewer selects esp-sdr's widest baseband filter (`BANDWIDTH 0`) so that
@@ -244,7 +244,7 @@ triggered it.
 ## How it works
 
     ┌──────────────── ESP32-S3 (eSpDR firmware + snapshot patch, in RAM) ───────────────┐
-    │  antenna → LNA → mixer (RF PLL, LO 2.2–2.8 GHz) → baseband filters → 10-bit ADCs   │
+    │  antenna → LNA → mixer (effective LO ≈1.84–2.79 GHz) → filters → 10-bit ADCs     │
     │       → sample-dump engine ──80 Msps──▶ SRAM capture banks 0–3 (4 × 16,384 words)  │
     │  core 0: on ESP_SNAPSHOT, chain 1–4 banks, check the joins, pack 20 bits/pair,     │
     │          CRC32 ──▶ USB Serial/JTAG (12 Mbit/s)                                     │
@@ -271,6 +271,17 @@ second, into a ring of 16,384 words in one of four 64 KiB capture banks.
 The receiver's convention is that I + jQ has its spectrum mirrored: a signal
 at RF = LO + f appears at −f. The viewer accounts for this, and every saved
 file is flipped (conjugated) back to the usual orientation.
+
+The bundled firmware includes eSpDR's [5/6 LO extension](https://github.com/h0m3us3r/eSpDR/blob/f279bf823eee41796dfd1ac21f13e1ed9b418c82/docs/LO-EXTENSION.md).
+The accepted effective-LO requests are **1841.666667–2790 MHz**, with 5/6
+conversion selected below 2210 MHz and normal conversion above it. For
+example, a 2000 MHz receive LO uses a 2400 MHz PLL coordinate. Spectrum axes
+and SigMF capture frequencies use the effective receive LO; the readout shows
+the conversion mode, and recordings also retain the PLL coordinate. Each tune
+still checks PLL lock and restores the previous frequency/mode on failure.
+These are tuning limits: usable reception and antenna response depend on the
+board and RF connection. The older Super Mini measurements below describe
+normal conversion only.
 
 ### 2. The snapshot patch (eSpDRmini)
 
@@ -359,7 +370,7 @@ written to any file. `--show-mac` turns both on.
 
 | | |
 |---|---|
-| Tuning range (PLL lock) | 2220–2790 MHz (2210 failed to lock; this varies by chip) |
+| Original normal-mode tuning range (PLL lock) | 2220–2790 MHz (2210 failed to lock; this varies by chip) |
 | Span | 80 MHz at 80 Msps, 16 MHz at 16 Msps |
 | Snapshot | 1–4 banks of 15,360 pairs: 192–768 µs at 80 Msps, 0.96–3.84 ms at 16 Msps |
 | Snapshot rate | 20 / 10 / 6.6 / 5 per second for 1 / 2 / 3 / 4 banks |
@@ -391,7 +402,7 @@ To rebuild the firmware you need eSpDR's source and ESP-IDF v5.5.3 or later;
 * Continuous narrowband streaming: filter and decimate on the ESP32-S3 itself
   (for example one 250 kHz channel) so the stream fits through the 12 Mbit/s
   USB port.
-* A sweep mode that stitches the whole 2220–2790 MHz range into one view.
+* A sweep mode that stitches the board's working tuning range into one view.
 * The full continuous experience: build [eSpDR](https://github.com/h0m3us3r/eSpDR).
 
 ## Credits and license

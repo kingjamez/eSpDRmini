@@ -574,8 +574,7 @@ def main():
 
     # ---- tuning ----
     def request_lo(mhz, source=None):
-        mhz = min(max(mhz, LO_MIN), LO_MAX)
-        mhz = round(round(mhz / radio.lo_step_mhz) * radio.lo_step_mhz, 4)
+        mhz = radio.tune_mhz(mhz)
         rx.set("lo", mhz * 1e6)
         if source is not lo_box:
             quiet(lo_box, f"{mhz:.3f}")
@@ -1108,7 +1107,9 @@ def main():
                           f"{lo - rate / 2e6:.0f} – {lo + rate / 2e6:.0f} MHz")
         t = state["times"]
         rate_now = (len(t) - 1) / (t[-1] - t[0]) if len(t) > 1 and t[-1] > t[0] else 0.0
-        stats["LO"].set_text(f"{lo:.4f} MHz")
+        mode = settings.get("lo_mode")
+        stats["LO"].set_text(f"{lo:.4f} MHz" + (f" · {mode}" if mode else ""))
+        stats["LO"].set_fontsize(9 if mode else 10)
         stats["Span · RBW"].set_text(f"{rate / 1e6:.0f} MHz · {rate / state['n'] / 1e3:.1f} kHz")
         stats["Gain"].set_text(f"{'AGC' if settings['agc'] else settings['gain']}  ({settings['gain_detail']})")
         stats["Snapshot"].set_text(f"{len(iq):,} pairs · {duration(len(iq) / rate)}")

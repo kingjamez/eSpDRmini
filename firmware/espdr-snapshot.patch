@@ -316,7 +316,7 @@ index 3985162..5e79089 100644
      }
  }
 diff --git a/protocol/control.h b/protocol/control.h
-index 4113dba..99b8769 100644
+index 501166c..2278ceb 100644
 --- a/protocol/control.h
 +++ b/protocol/control.h
 @@ -49,6 +49,13 @@
