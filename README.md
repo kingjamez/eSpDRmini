@@ -164,12 +164,29 @@ protocol (`INFO`, `CAPS`, `LIMITS?`, `RANGE?`, `FREQ`, `GAIN`, `BANDWIDTH`,
 repository, and esp-sdr itself is licensed GPL-3.0.
 
 **Spectrum orientation per chip.** Each chip's raw I/Q may present the
-spectrum mirrored. On the ESP32-S3, both eSpDR and esp-sdr are mirrored, and
-the viewer corrects it; this was verified with a steady 2448 MHz carrier
-that the boards pick up. Other chips haven't been checked yet: run
-`python tools/orientation.py` on a new chip. It reports "orientation OK" or
-"MIRRORED", and a mirrored chip only needs its entry in `ESPSDR_MIRRORED` in
-`radios.py` changed.
+spectrum mirrored, and the viewer corrects for it per chip. Verified so far:
+
+| Chip | Firmware | Checked with | Result |
+|---|---|---|---|
+| ESP32-S3 | eSpDR and esp-sdr | 2448 MHz carrier at several LOs | mirrored, corrected |
+| ESP32-C5 (rev 1.0) | esp-sdr | 48 MHz harmonics: 2400, 2448, 2496 MHz and 5184, 5232, 5280, 5328, 5760 MHz | mirrored on both bands, corrected |
+
+The reference lines are harmonics of 48 MHz (2448 MHz is 51 × 48 MHz), which
+boards pick up from their surroundings; they stay at the same RF frequency
+whatever the LO, so a mirrored spectrum shows them at the wrong place. For a
+new chip run `python tools/orientation.py`. It reports "orientation OK" or
+"MIRRORED", and a mirrored result only needs that chip's entry in
+`ESPSDR_MIRRORED` in `radios.py` changed.
+
+**On the ESP32-C5** the tuning slider covers 2.3–5.95 GHz with both Wi-Fi
+bands marked, the Wi-Fi overlay labels 5 GHz channels 36–177, and all six
+sample rates work: at 4 MS/s one snapshot holds 4.1 ms of signal.
+
+**Flaky USB connections:** some boards briefly drop off USB, and opening the
+port can reset the chip. The esp-sdr backend reconnects, re-applies the
+frequency, gain and filter, and carries on. In testing, a C5 that dropped
+off several times during a flash backup ran 300 snapshots without an error
+(one silent reconnect).
 
 ## Using the viewer
 

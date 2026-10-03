@@ -188,7 +188,7 @@ def main():
 
     fig = plt.figure(figsize=(14, 8.8))
     if fig.canvas.manager:
-        fig.canvas.manager.set_window_title("eSpDRmini · ESP32-S3 snapshot SDR")
+        fig.canvas.manager.set_window_title(f"eSpDRmini · {radio.chip} snapshot SDR")
 
     # ---- page-aware builders ------------------------------------------------------
     PAGES = ("Receiver", "Display", "Trigger", "Measure & DVR")
@@ -296,7 +296,7 @@ def main():
     fig.add_artist(plt.Line2D([SB, SB], [0.035, 1], transform=fig.transFigure, color=LINE, lw=1))
     fig.add_artist(plt.Line2D([0, 1], [0.035, 0.035], transform=fig.transFigure, color=LINE, lw=1))
     label(0.016, 0.945, "eSpDRmini", 22, CYAN, weight="heavy", path_effects=glow)
-    label(0.016, 0.92, "ESP32-S3 snapshot SDR", 8.5, MUTED)
+    label(0.016, 0.92, f"{radio.chip} snapshot SDR", 8.5, MUTED)
 
     sx, sw = 0.016, SB - 0.032
     nav_colors = (CYAN, GREEN, ORANGE, PURPLE)
@@ -459,12 +459,16 @@ def main():
     for f in ticks:
         tune_ax.text(f, -0.35, f"{f:g}", transform=trans, ha="center", va="top", fontsize=7,
                      color=MUTED2, family=MONO)
-    tune_ax.text(2441.75, 1.15, "ISM 2.4 GHz", transform=trans, ha="center", va="bottom",
-                 fontsize=6.5, color=CYAN, alpha=0.8)
+    # Band names sit above the bar on a 2.4 GHz-only slider; on a wide (C5)
+    # slider that space holds the bar's own labels, so they go inside it.
+    wide = span_mhz > 1000
+    band_y, band_va = (0.5, "center") if wide else (1.15, "bottom")
+    tune_ax.text(2441.75, band_y, "2.4 GHz" if wide else "ISM 2.4 GHz", transform=trans, ha="center",
+                 va=band_va, fontsize=6.5, color=CYAN, alpha=0.9, zorder=5)
     if LO_MAX > 5150:
         tune_ax.axvspan(5150, 5895, 0.2, 0.8, color=CYAN, alpha=0.18, lw=0)
-        tune_ax.text(5522, 1.15, "Wi-Fi 5 GHz", transform=trans, ha="center", va="bottom",
-                     fontsize=6.5, color=CYAN, alpha=0.8)
+        tune_ax.text(5522, band_y, "Wi-Fi 5 GHz", transform=trans, ha="center", va=band_va,
+                     fontsize=6.5, color=CYAN, alpha=0.9, zorder=5)
 
     # ---- main: spectrum --------------------------------------------------------------------
     trace_cmap = LinearSegmentedColormap.from_list("trace", [CYAN, GREEN, LIME, YELLOW, ORANGE])
@@ -641,6 +645,13 @@ def main():
             overlay_artists.append(ax_spec.text(x, y, text, transform=top, ha="center", va="top", fontsize=size,
                                                 color=color, weight=weight, clip_on=True))
 
+        if i == 1:  # Wi-Fi 5 GHz (U-NII 1-4): 20 MHz channels 36-177, drawn wherever they are in view
+            for ch in [*range(36, 65, 4), *range(100, 145, 4), *range(149, 178, 4)]:
+                c = 5000.0 + 5 * ch
+                overlay_artists.append(ax_spec.axvspan(c - 10, c + 10, color=GREEN,
+                                                       alpha=0.06 if (ch // 4) % 2 else 0.025, lw=0))
+                overlay_artists.append(ax_spec.axvline(c, ymin=0.93, ymax=1, color=GREEN, lw=0.8, alpha=0.8))
+                tag(c, str(ch), GREEN, 8, 0.925, "bold")
         if i == 1:  # Wi-Fi 2.4 GHz channels 1-14
             for ch in range(1, 15):
                 c = 2484.0 if ch == 14 else 2412.0 + 5 * (ch - 1)
@@ -1093,7 +1104,7 @@ def main():
         level_text.set_color(RED if clip > 0.1 else CYAN)
 
         lo, rate = settings["lo_hz"] / 1e6, settings["rate"]
-        subtitle.set_text(f"ESP32-S3 internal receiver  ·  LO {lo:.4f} MHz  ·  "
+        subtitle.set_text(f"{radio.chip} internal receiver  ·  {radio.backend}  ·  LO {lo:.4f} MHz  ·  "
                           f"{lo - rate / 2e6:.0f} – {lo + rate / 2e6:.0f} MHz")
         t = state["times"]
         rate_now = (len(t) - 1) / (t[-1] - t[0]) if len(t) > 1 and t[-1] > t[0] else 0.0

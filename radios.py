@@ -14,6 +14,7 @@ Every backend returns snapshots as complex64 in raw ADC counts and in the
 usual orientation, where a signal at RF = LO + f appears at +f.
 """
 import json
+import os
 import random
 import time
 import zlib
@@ -29,7 +30,8 @@ ESPSDR_RATE_CODES = {80e6: 0, 40e6: 1, 20e6: 2, 10e6: 3, 8e6: 4, 4e6: 5, 16e6: 6
 # Spectrum orientation of each esp-sdr chip's raw I + jQ: True when a signal at
 # RF = LO + f arrives at -f. Measured against known Wi-Fi channels; chips not
 # listed are assumed to match the S3 until checked (see tools/orientation.py).
-ESPSDR_MIRRORED = {"S3SDR": True}
+ESPSDR_MIRRORED = {"S3SDR": True,   # eSpDR and esp-sdr alike
+                   "C5SDR": True}   # both the 2.4 and 5 GHz paths (48 MHz harmonics)
 
 # Slider range shown for each chip family (MHz). esp-sdr accepts 100-6000 MHz
 # tuning attempts, but PLL lock outside these bands has not been verified.
@@ -121,13 +123,12 @@ class EspSdrRadio(Radio):
     lo_step_mhz = 1.0
     has_agc = True
 
-    def __init__(self, port, timeout=3.0):
-        self.port = port
-        self.ser = serial.Serial()
-        self.ser.port, self.ser.baudrate, self.ser.timeout = port, 115200, timeout
-        self.ser.dtr = self.ser.rts = False  # set before opening: toggling them can reset the chip
-        self.ser.open()
-        self.resync()
+    def __init__(self, port, timeout=3.0, attempts=3):
+        self.port, self.timeout = port, timeout
+        self.ser = None
+        self._agc, self._gain, self._wide = True, None, False
+        self.reconnects = 0
+        self._connect(attempts)
         ident = self.ask("INFO").split()
         if len(ident) < 4 or ident[2] != "burst":
             raise EspSdrError(f"not esp-sdr firmware: {' '.join(ident)!r}")
@@ -147,10 +148,49 @@ class EspSdrRadio(Radio):
         self._lo_mhz = 2440
         self._rate = self.rates[0]
         self.bandwidth = limits.get("bandwidth")  # [min, max, step, default] MHz, or None
-        if self.bandwidth:
-            self.ask("BANDWIDTH 0")  # widest filter, so the whole sampled span shows signals
-        self.set_lo(2440e6)
-        self.set_agc(True)
+        self._wide = bool(self.bandwidth)  # widest filter, so the whole sampled span shows signals
+        self._restore()
+
+    # -- connection --
+    def _connect(self, attempts):
+        """Opens the port and lines the protocol up. Some boards drop off USB
+        now and then, and opening the port can reset the chip, so this waits
+        for the port to come back and tries again."""
+        for attempt in range(attempts):
+            try:
+                if self.ser is not None:
+                    self.ser.close()
+                deadline = time.time() + 5
+                while not os.path.exists(self.port) and time.time() < deadline:
+                    time.sleep(0.2)
+                self.ser = serial.Serial()
+                self.ser.port, self.ser.baudrate, self.ser.timeout = self.port, 115200, self.timeout
+                self.ser.dtr = self.ser.rts = False  # set before opening: toggling them can reset the chip
+                self.ser.open()
+                self.resync()
+                return
+            except (serial.SerialException, OSError, EspSdrError):
+                if attempt == attempts - 1:
+                    raise
+                time.sleep(1.0)
+
+    def _restore(self):
+        """Re-applies settings, e.g. after the board reset during a reconnect."""
+        if self._wide:
+            self.ask("BANDWIDTH 0")
+        self.ask(f"FREQ {getattr(self, '_lo_mhz', 2440)}")
+        self.ask("GAIN HARDWARE" if self._agc else f"GAIN MANUAL {self._gain}")
+
+    def _robust(self, action):
+        """Runs a protocol exchange; if the USB connection dropped, reconnects,
+        restores the settings and tries once more."""
+        try:
+            return action()
+        except (serial.SerialException, OSError):
+            self.reconnects += 1
+            self._connect(3)
+            self._restore()
+            return action()
 
     # -- protocol --
     def _line(self):
@@ -192,14 +232,14 @@ class EspSdrRadio(Radio):
 
     # -- Radio interface --
     def settings(self):
-        g = self.ask("GAIN?").split()  # GAIN <HARDWARE|MANUAL> <code|-1> 0 <max> <forced>
+        g = self._robust(lambda: self.ask("GAIN?")).split()  # GAIN <HARDWARE|MANUAL> <code|-1> 0 <max> <forced>
         agc = g[1] == "HARDWARE"
         return {"lo_hz": self._lo_mhz * 1e6, "rate": self._rate, "gain": None if agc else int(g[2]),
                 "agc": agc, "gain_detail": "hardware AGC" if agc else f"index {g[2]} of {g[4]}"}
 
     def set_lo(self, hz):
         mhz = int(round(hz / 1e6))
-        self.ask(f"FREQ {mhz}")
+        self._robust(lambda: self.ask(f"FREQ {mhz}"))
         self._lo_mhz = mhz
 
     def set_rate(self, hz):
@@ -208,13 +248,18 @@ class EspSdrRadio(Radio):
         self._rate = hz
 
     def set_gain(self, index):
-        self.ask(f"GAIN MANUAL {int(min(max(index, 0), self.gain_max))}")
+        self._gain, self._agc = int(min(max(index, 0), self.gain_max)), False
+        self._robust(lambda: self.ask(f"GAIN MANUAL {self._gain}"))
 
     def set_agc(self, on):
         if on:
-            self.ask("GAIN HARDWARE")
+            self._agc = True
+            self._robust(lambda: self.ask("GAIN HARDWARE"))
 
     def snapshot(self, banks=1):
+        return self._robust(self._capture)
+
+    def _capture(self):
         n = self.bank_pairs
         header = self.ask(f"CAP20 {n} {ESPSDR_RATE_CODES[self._rate]}").split()
         if header[0] != "DATA" or int(header[1]) != n:
@@ -239,6 +284,14 @@ class EspSdrRadio(Radio):
 
 
 # ---- opening a board -----------------------------------------------------------------------
+
+def _reboot(port):
+    """Resets the chip so it runs its flashed firmware again."""
+    import subprocess
+    import sys
+    subprocess.run([sys.executable, "-m", "esptool", "--port", port, "--after", "hard-reset", "chip-id"],
+                   capture_output=True)
+
 
 def _probe_espsdr(port):
     try:
@@ -277,6 +330,7 @@ def open_radio(port, backend="auto", reload=False):
         try:
             espctl.load_ram(port)
         except Exception as e:
+            _reboot(port)  # a failed load leaves the chip in its ROM bootloader
             raise SystemExit(f"Could not load the eSpDR firmware ({e}). eSpDR runs on the ESP32-S3 only; "
                              "for other ESP32 chips flash esp-sdr: https://espargos.net/espsdr/app/flash.html")
         esp = espctl.Esp(port)
