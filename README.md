@@ -155,7 +155,7 @@ What changes with esp-sdr:
 | Sample rates | 80, 16 MS/s | per chip, e.g. S3 80/40/16, C5 80–4, C6 80 |
 | Samples per snapshot | 15,360 to 61,440 contiguous | 16,380 |
 | Tuning steps | 457.76 Hz | 1 MHz |
-| Gain | gain-table index | gain-table index or hardware AGC (default) |
+| Gain | gain-table index | gain-table index (40 by default) or hardware AGC (`--agc`) |
 
 The viewer selects esp-sdr's widest baseband filter (`BANDWIDTH 0`) so that
 signals fill the whole sampled span. It speaks esp-sdr's documented text
@@ -182,6 +182,13 @@ new chip run `python tools/orientation.py`. It reports "orientation OK" or
 **On the ESP32-C5** the tuning slider covers 2.3–5.95 GHz with both Wi-Fi
 bands marked, the Wi-Fi overlay labels 5 GHz channels 36–177, and all six
 sample rates work: at 4 MS/s one snapshot holds 4.1 ms of signal.
+
+**Hardware AGC and quiet bands.** The chip's AGC follows Wi-Fi packets. On a
+quiet band (for example the 5.4–5.7 GHz DFS range) it finds none, turns the
+gain all the way up and clips the ADC, and the spectrum then shows a large
+false hump of distortion around the LO. The viewer therefore starts esp-sdr
+boards on manual gain 40, and if more than 1% of samples clip, the status
+bar turns red and says what to change.
 
 **Board doesn't answer after flashing esp-sdr?** If a board previously ran
 other firmware, settings that firmware left in the NVS partition (for

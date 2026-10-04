@@ -116,7 +116,9 @@ def main():
     ap.add_argument("--backend", choices=("auto", "espdr", "esp-sdr"), default="auto",
                     help="auto: use esp-sdr if the board runs it, else load eSpDR into RAM (S3)")
     ap.add_argument("--lo", type=float, default=2440.0, help="LO, MHz")
-    ap.add_argument("--gain", type=int, help="manual gain index (eSpDR default 45; esp-sdr default: AGC)")
+    ap.add_argument("--gain", type=int, help="manual gain index (default 45 on eSpDR, 40 on esp-sdr)")
+    ap.add_argument("--agc", action="store_true",
+                    help="start with the chip's hardware AGC (esp-sdr); it can overdrive the ADC on quiet bands")
     ap.add_argument("--rate", type=float, default=80, help="MS/s (80 or 16 on eSpDR; esp-sdr per chip)")
     ap.add_argument("--rows", type=int, default=400, help="waterfall / DVR history, snapshots")
     ap.add_argument("--show-mac", action="store_true",
@@ -155,9 +157,14 @@ def main():
     radio.set_rate(rate0)
     lo0 = min(max(args.lo, LO_MIN), LO_MAX)
     radio.set_lo(lo0 * 1e6)
-    if args.gain is not None or not radio.has_agc:
-        radio.set_gain(args.gain if args.gain is not None else 45)
-    gain0 = args.gain if args.gain is not None else 45
+    # Manual gain by default: the hardware AGC tracks Wi-Fi packets and, on a
+    # quiet band, turns the gain all the way up and clips the ADC.
+    gain0 = args.gain if args.gain is not None else (40 if radio.has_agc else 45)
+    use_agc = radio.has_agc and args.agc
+    if use_agc:
+        radio.set_agc(True)
+    else:
+        radio.set_gain(gain0)
 
     frames = queue.Queue(maxsize=4)
     rx = Receiver(radio, frames)
@@ -330,7 +337,7 @@ def main():
     label(sx, 0.555, "Gain selector", 8)
     gain_slider = slider([sx, 0.525, sw - 0.03, 0.022], 0, radio.gain_max, min(gain0, radio.gain_max), 1,
                          GREEN, "%d")
-    agc_check = checkbox([sx + sw - 0.062, 0.548, 0.062, 0.024], "AGC", radio.has_agc and args.gain is None) \
+    agc_check = checkbox([sx + sw - 0.062, 0.548, 0.062, 0.024], "AGC", use_agc) \
         if radio.has_agc else None
     label(sx, 0.507, "40–55 indoors  ·  70+ clips", 6.5, MUTED2)
     label(sx, 0.475, "Sample rate", 8)
@@ -1102,6 +1109,7 @@ def main():
         clip = np.mean((np.abs(iq.real) >= 500) | (np.abs(iq.imag) >= 500)) * 100
         level_text.set_text(f"{dbfs:5.1f} dBFS")
         level_text.set_color(RED if clip > 0.1 else CYAN)
+        state["clip"] = clip
 
         lo, rate = settings["lo_hz"] / 1e6, settings["rate"]
         subtitle.set_text(f"{radio.chip} internal receiver  ·  {radio.backend}  ·  LO {lo:.4f} MHz  ·  "
@@ -1131,6 +1139,11 @@ def main():
             color, text = RED, f"Receiver error: {rx.error}"
         elif toast_msg and time.time() < toast_msg[2]:
             color, text = toast_msg[1], toast_msg[0]
+        elif state.get("clip", 0) > 1 and not rx.paused:
+            agc_on = agc_check is not None and agc_check.get_status()[0]
+            color, text = RED, (f"ADC clipping on {state['clip']:.0f}% of samples: the spectrum shows distortion, "
+                                "not real signals  ·  " + ("untick AGC (the hardware AGC overdrives quiet bands)"
+                                                          if agc_on else "lower the gain"))
         elif rx.paused:
             color, text = YELLOW, (f"Paused at snapshot {state['count']}  ·  IQ snapshot saves this frame  ·  "
                                    "drag a box on the waterfall to save part of it  ·  space resumes")
