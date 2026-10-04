@@ -183,6 +183,15 @@ new chip run `python tools/orientation.py`. It reports "orientation OK" or
 bands marked, the Wi-Fi overlay labels 5 GHz channels 36–177, and all six
 sample rates work: at 4 MS/s one snapshot holds 4.1 ms of signal.
 
+**Board doesn't answer after flashing esp-sdr?** If a board previously ran
+other firmware, settings that firmware left in the NVS partition (for
+example a Wi-Fi band or country setting) can make esp-sdr crash at start-up
+(`esp_wifi_set_channel ... ESP_ERR_INVALID_ARG` in its serial output) and
+reboot in a loop. Erase the NVS partition (flash is backed up first, as
+above) and it starts normally:
+
+    python -m esptool --chip esp32c5 --before usb-reset erase-region 0x9000 0x6000
+
 **Flaky USB connections:** some boards briefly drop off USB, and opening the
 port can reset the chip. The esp-sdr backend reconnects, re-applies the
 frequency, gain and filter, and carries on. In testing, a C5 that dropped
