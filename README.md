@@ -160,8 +160,10 @@ What changes with esp-sdr:
 The viewer selects esp-sdr's widest baseband filter (`BANDWIDTH 0`) so that
 signals fill the whole sampled span. It speaks esp-sdr's documented text
 protocol (`INFO`, `CAPS`, `LIMITS?`, `RANGE?`, `FREQ`, `GAIN`, `BANDWIDTH`,
-`CAP20`) from [`radios.py`](radios.py); no esp-sdr code is included in this
-repository, and esp-sdr itself is licensed GPL-3.0.
+`CAP20`) from [`radios.py`](radios.py); the viewer contains no esp-sdr code,
+and esp-sdr itself is licensed GPL-3.0. (The standalone touchscreen firmware
+in [`lcd/`](lcd/README.md) is a different matter: it builds on esp-sdr's
+receiver code and is GPL-3.0-or-later.)
 
 **Spectrum orientation per chip.** Each chip's raw I/Q may present the
 spectrum mirrored, and the viewer corrects for it per chip. Verified so far:
@@ -204,6 +206,18 @@ port can reset the chip. The esp-sdr backend reconnects, re-applies the
 frequency, gain and filter, and carries on. In testing, a C5 that dropped
 off several times during a flash backup ran 300 snapshots without an error
 (one silent reconnect).
+
+## Standalone, on a touchscreen
+
+![eSpDRmini running on its own on a Waveshare ESP32-S3-Touch-LCD-4.3](lcd/docs/screen.png)
+
+On a **Waveshare ESP32-S3-Touch-LCD-4.3**, the analyser runs on the board by
+itself, with no PC needed. The ESP32-S3 captures with esp-sdr's receiver code
+and computes the spectra itself. It draws the spectrum, waterfall, level meter,
+channel overlays and markers on the 800 × 480 touchscreen, at up to 50
+snapshots per second, and you tune and set it up by touch. It is flashed
+(replacing the board's demo) and lives in [`lcd/`](lcd/README.md), with its
+own build steps and licence (GPL-3.0-or-later).
 
 ## Using the viewer
 
@@ -398,6 +412,7 @@ outside the span can alias into it; see eSpDR's
 | `firmware/espdr-snapshot.patch` | the change to eSpDR, with [rebuild steps](firmware/README.md) |
 | `tools/gain_sweep.py` | plots the spectrum at several gain settings ([example](docs/gain_sweep_2440MHz.png)) |
 | `tools/orientation.py` | checks a backend's spectrum orientation against the 2448 MHz carrier |
+| `lcd/` | standalone touchscreen firmware for the Waveshare ESP32-S3-Touch-LCD-4.3 ([README](lcd/README.md)); esp-sdr is a submodule there |
 
 To rebuild the firmware you need eSpDR's source and ESP-IDF v5.5.3 or later;
 [firmware/README.md](firmware/README.md) has the steps.
@@ -420,7 +435,8 @@ To rebuild the firmware you need eSpDR's source and ESP-IDF v5.5.3 or later;
   which the viewer drives over its documented protocol.
 * The viewer's look is inspired by [TMOG](https://tmog.org).
 * eSpDRmini is released under the [Zero-Clause BSD license](LICENSE), the
-  same license as eSpDR.
+  same license as eSpDR, except `lcd/`, which builds on esp-sdr and is
+  GPL-3.0-or-later ([lcd/LICENSE](lcd/LICENSE)).
 * The firmware image also contains Espressif's PHY library and ESP-IDF sources
   (Apache License 2.0) and Cadence's Xtensa window vectors (MIT); their
   license texts are in [firmware/](firmware/README.md).

@@ -1,0 +1,15 @@
+# Code runs from PSRAM through a 16 KiB instruction cache. The per-pixel
+# drawing code and the per-sample DSP loop run for every frame and snapshot,
+# so keep them in internal RAM.
+[mapping:espdrmini_lcd_hot]
+archive: libmain.a
+entries:
+    gfx (noflash)
+    dsp (noflash)
+    render (noflash)
+
+[mapping:espdrmini_lcd_fft]
+archive: libesp-dsp.a
+entries:
+    dsps_fft2r_fc32_aes3_ (noflash)
+    dsps_fft2r_fc32_ansi (noflash)

@@ -1,0 +1,3 @@
+[submodule "lcd/esp-sdr"]
+	path = lcd/esp-sdr
+	url = https://github.com/ESPARGOS/esp-sdr
