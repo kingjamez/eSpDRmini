@@ -138,6 +138,17 @@ class Esp:
         return {k: self.stat(k) for k in ("radio", "lo_hz", "rate", "width", "filter", "gain",
                                           "rf_gain", "bb_gain")}
 
+    def supports_snapshot(self):
+        """Probe the snapshot command without starting a capture.
+
+        Original streaming firmware shares our firmware ID but answers
+        UNKNOWN_OP. Snapshot firmware rejects this out-of-range bank count
+        with BAD_ARGUMENT (or NOT_READY if radio initialization failed).
+        """
+        seq = self._send(ESP_SNAPSHOT, MAX_BANKS + 1)
+        status, _ = self._response(ESP_SNAPSHOT, seq)
+        return status in (2, 4)  # BAD_ARGUMENT, NOT_READY
+
     def snapshot(self, banks=1):
         """One block of banks * SNAP_PAIRS contiguous IQ pairs (banks 1-4) as
         complex64, in raw ADC counts."""
