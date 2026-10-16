@@ -34,20 +34,27 @@ def lowpass(cutoff, fs, taps):
     return h / h.sum()
 
 
-def box_plan(rate, f_lo_mhz, f_hi_mhz):
+def box_plan(rate, f_lo_mhz, f_hi_mhz, samples=None):
     """Decimation and filter for extracting [f_lo, f_hi]: output rate is at
     least 1.25x the box width."""
     bw = (f_hi_mhz - f_lo_mhz) * 1e6
+    if not np.isfinite(rate) or rate <= 0 or not np.isfinite(bw) or bw <= 0:
+        raise ValueError("Select a frequency band with positive width and a valid sample rate.")
     decim = max(1, int(rate // (1.25 * bw)))
     taps = max(31, 8 * decim + 1) | 1
-    return {"bw": bw, "decim": decim, "rate_out": rate / decim, "taps": taps}
+    plan = {"bw": bw, "decim": decim, "rate_out": rate / decim, "taps": taps}
+    if samples is not None:
+        if samples < taps:
+            raise ValueError("Selection too narrow for this snapshot. Widen the band or capture a longer snapshot.")
+        plan["samples_out"] = (samples - taps) // decim + 1
+    return plan
 
 
 def extract(iq_raw, lo_hz, rate, f_lo_mhz, f_hi_mhz):
     """Shifts the box centre to 0 Hz, filters to the box and decimates one
     snapshot. Returns complex64 in the usual orientation; the filter's edge
     transient is dropped, so the result is slightly shorter than len/decim."""
-    plan = box_plan(rate, f_lo_mhz, f_hi_mhz)
+    plan = box_plan(rate, f_lo_mhz, f_hi_mhz, len(iq_raw))
     x = iq_raw.astype(np.complex64)
     x = x - x.mean()
     centre = (f_lo_mhz + f_hi_mhz) / 2 * 1e6
@@ -114,6 +121,11 @@ def save_box(directory, rows, f_lo_mhz, f_hi_mhz, mac=None, per_snapshot=False, 
     Writes one cf32_le SigMF recording whose capture segments are the
     snapshots (with gaps between them), or one recording per snapshot.
     Returns (output directory, plan, total samples)."""
+    if not rows:
+        raise ValueError("Select at least one snapshot.")
+    # Validate every segment before creating files, including per-snapshot exports.
+    for iq_raw, settings, _ in rows:
+        box_plan(settings["rate"], f_lo_mhz, f_hi_mhz, len(iq_raw))
     first_when = rows[0][2]
     out = os.path.join(directory, f"box_{first_when.strftime('%Y%m%dT%H%M%S')}Z_"
                                   f"{f_lo_mhz:.3f}-{f_hi_mhz:.3f}MHz")
